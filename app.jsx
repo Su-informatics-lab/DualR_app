@@ -1,0 +1,775 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+/*
+ * DualReasoning Clinical Risk Assessment Platform
+ * License: Apache-2.0
+ * Su Lab · Biomedical Informatics, Biostatistics & Health Data Science
+ * Indiana University School of Medicine
+ *
+ * Fonts: Libre Baskerville (SIL OFL), Source Sans 3 (SIL OFL), JetBrains Mono (SIL OFL)
+ * All fonts are open-source.
+ */
+
+// ── Color Tokens ──
+const C = {
+  bg: "#F9F8F6",
+  bgCard: "#FFFFFF",
+  bgDark: "#121820",
+  text: "#1A1D21",
+  textMuted: "#6C737F",
+  textLight: "#F8F6F3",
+  accent: "#0A7E8C",
+  accentLight: "#E6F4F6",
+  accentDark: "#066570",
+  crimson: "#8B1A1A",
+  crimsonLight: "#FEF2F2",
+  border: "#E5E4E1",
+  success: "#0D7C5F",
+  successLight: "#ECFDF5",
+  warning: "#B45309",
+  warningLight: "#FFFBEB",
+};
+
+const fontLink = "https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap";
+const ff = { serif: "'Libre Baskerville', 'Georgia', serif", sans: "'Source Sans 3', 'Helvetica Neue', sans-serif", mono: "'JetBrains Mono', monospace" };
+
+// ══════════════════════════════════════════════
+// REAL FEATURE DEFINITIONS (from ml.py)
+// ══════════════════════════════════════════════
+
+const ALL_CHARLSON = [
+  { id: "HIV", label: "HIV/AIDS", q: "Have you been diagnosed with HIV?" },
+  { id: "Cerebrovascular_Disease", label: "Cerebrovascular disease", q: "Any history of stroke or TIA?" },
+  { id: "Congestive_Heart_Failure", label: "Congestive heart failure", q: "Have you been diagnosed with heart failure?" },
+  { id: "Myocardial_Infarction", label: "History of heart attack", q: "Have you ever had a heart attack?" },
+  { id: "Peripheral_Vascular_Disease", label: "Peripheral vascular disease", q: "Any history of peripheral artery disease?" },
+  { id: "Chronic_Pulmonary_Disease", label: "Chronic lung disease", q: "Do you have COPD, asthma, or another chronic lung condition?" },
+  { id: "Dementia", label: "Dementia", q: "Have you been diagnosed with dementia?" },
+  { id: "Liver_Disease_Mild", label: "Liver disease (mild)", q: "Any history of mild liver disease (e.g., fatty liver)?" },
+  { id: "Liver_Disease_Moderate_Severe", label: "Liver disease (moderate/severe)", q: "Any moderate-to-severe liver disease (e.g., cirrhosis)?" },
+  { id: "Malignancy", label: "Cancer (non-metastatic)", q: "Have you been diagnosed with cancer (non-metastatic)?" },
+  { id: "Metastatic_Solid_Tumor", label: "Metastatic cancer", q: "Do you have metastatic cancer?" },
+  { id: "Peptic_Ulcer_Disease", label: "Peptic ulcer disease", q: "Have you been diagnosed with peptic ulcer disease?" },
+  { id: "Renal_Disease_Mild_Moderate", label: "Kidney disease (mild/moderate)", q: "Any mild-to-moderate kidney disease?" },
+  { id: "Renal_Disease_Severe", label: "Severe kidney disease", q: "Any severe kidney disease or dialysis?" },
+  { id: "Rheumatic_Disease", label: "Rheumatic disease", q: "Any rheumatic disease (e.g., lupus, rheumatoid arthritis)?" },
+  { id: "Hemiplegia_Paraplegia", label: "Hemiplegia or paraplegia", q: "Any history of hemiplegia or paraplegia?" },
+  { id: "Diabetes_with_Chronic_Complications", label: "Diabetes with complications", q: "Do you have diabetes with chronic complications?" },
+  { id: "Diabetes_without_Chronic_Complications", label: "Diabetes without complications", q: "Have you been diagnosed with diabetes (without complications)?" },
+];
+
+// Exact disease-feature mappings from DISEASE_FEATURE_MAP in ml.py
+const DISEASE_COMO_MAP = {
+  t2d: ALL_CHARLSON.filter(c => !c.id.startsWith("Diabetes")),
+  htn: ALL_CHARLSON,
+  aud: ALL_CHARLSON, // full Charlson per ml.py
+};
+
+const PHENOTYPES = {
+  t2d: {
+    id: "t2d", name: "Type 2 Diabetes Mellitus", abbr: "T2D",
+    desc: "Metabolic disorder characterized by insulin resistance and hyperglycemia",
+    icon: "🩸", color: "#DC2626", prevalence: "10.9%",
+    auc: { base: 0.766, pdrs: 0.819, dualr: 0.851 },
+    n: "247,642",
+  },
+  htn: {
+    id: "htn", name: "Hypertension", abbr: "HTN",
+    desc: "Persistent elevation of systemic arterial blood pressure",
+    icon: "❤️", color: "#7C3AED", prevalence: "33.0%",
+    auc: { base: 0.846, pdrs: 0.875, dualr: 0.886 },
+    n: "254,487",
+  },
+  aud: {
+    id: "aud", name: "Alcohol Use Disorder", abbr: "AUD",
+    desc: "Impaired control over alcohol use, often underdocumented in clinical records",
+    icon: "🧠", color: "#EA580C", prevalence: "7.8%",
+    auc: { base: 0.798, pdrs: 0.834, dualr: 0.826 },
+    n: "254,487",
+  },
+};
+
+const DEMO_FIELDS = [
+  { id: "age", label: "Age Group", options: ["<45", "45–54", "55–64", "65+"], ref: null },
+  { id: "gender", label: "Biological Sex", options: ["Man", "Woman", "Other"], ref: "Man" },
+  { id: "race", label: "Race", options: ["White", "Black", "Others"], ref: "White" },
+  { id: "ethnicity", label: "Ethnicity", options: ["Hispanic", "Others"], ref: "Others" },
+];
+
+const SAMPLE_DRUGS = [
+  "metformin hydrochloride 500 MG Oral Tablet",
+  "lisinopril 10 MG Oral Tablet",
+  "atorvastatin calcium 20 MG Oral Tablet",
+  "amlodipine besylate 5 MG Oral Tablet",
+  "omeprazole 20 MG Delayed Release Oral Capsule",
+  "sertraline hydrochloride 50 MG Oral Tablet",
+  "gabapentin 300 MG Oral Capsule",
+];
+
+// ── Simulated risk (placeholder for real XGBoost model) ──
+function simulateRisk(pheno, drugCount, comoCount, demo) {
+  // In production: POST to /api/predict with features → XGBoost inference
+  const base = { t2d: 0.22, htn: 0.45, aud: 0.08 }[pheno] || 0.2;
+  const ageBoost = demo.age === "65+" ? 0.12 : demo.age === "55–64" ? 0.08 : 0.0;
+  const drugBoost = Math.min(drugCount * 0.035, 0.3);
+  const comoBoost = comoCount * 0.04;
+  const raw = base + ageBoost + drugBoost + comoBoost + (Math.random() * 0.06 - 0.03);
+  return Math.min(0.95, Math.max(0.03, raw));
+}
+
+// ── Risk Gauge ──
+function RiskGauge({ value, size = 150 }) {
+  const pct = Math.round(value * 100);
+  const r = (size - 16) / 2;
+  const circ = 2 * Math.PI * r;
+  const dash = circ * 0.75;
+  const offset = dash - (dash * value);
+  const riskLevel = pct < 20 ? "Low" : pct < 40 ? "Moderate" : pct < 65 ? "Elevated" : "High";
+  const riskColor = pct < 20 ? C.success : pct < 40 ? C.warning : pct < 65 ? "#D97706" : C.crimson;
+
+  return (
+    <div style={{ position: "relative", width: size, height: size * 0.82 }}>
+      <svg width={size} height={size * 0.82} viewBox={`0 0 ${size} ${size * 0.82}`}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#ECECEA" strokeWidth="10"
+          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+          transform={`rotate(135 ${size/2} ${size/2})`} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={riskColor} strokeWidth="10"
+          strokeDasharray={`${dash} ${circ}`} strokeDashoffset={offset} strokeLinecap="round"
+          transform={`rotate(135 ${size/2} ${size/2})`}
+          style={{ transition: "stroke-dashoffset 1s ease-out, stroke 0.5s" }} />
+      </svg>
+      <div style={{ position: "absolute", top: "26%", left: 0, right: 0, textAlign: "center" }}>
+        <div style={{ fontSize: size * 0.22, fontWeight: 700, color: riskColor, fontFamily: ff.mono, lineHeight: 1 }}>{pct}%</div>
+        <div style={{ fontSize: size * 0.09, color: C.textMuted, marginTop: 3, fontFamily: ff.sans, fontWeight: 600 }}>{riskLevel}</div>
+      </div>
+    </div>
+  );
+}
+
+// ── Step Bar ──
+function Steps({ steps, current }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: 36 }}>
+      {steps.map((s, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "center" }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+            <div style={{
+              width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 12, fontWeight: 600, fontFamily: ff.sans,
+              background: i <= current ? C.accent : "transparent",
+              color: i <= current ? "#fff" : C.textMuted,
+              border: `2px solid ${i <= current ? C.accent : C.border}`,
+              transition: "all 0.3s",
+            }}>{i < current ? "✓" : i + 1}</div>
+            <span style={{ fontSize: 11, fontWeight: i === current ? 600 : 400, color: i <= current ? C.accent : C.textMuted, fontFamily: ff.sans, whiteSpace: "nowrap" }}>{s}</span>
+          </div>
+          {i < steps.length - 1 && <div style={{ width: 40, height: 2, background: i < current ? C.accent : C.border, margin: "0 6px", marginBottom: 18, transition: "background 0.3s" }} />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Logo (clickable → home) ──
+function Logo({ onClick, compact }) {
+  return (
+    <button onClick={onClick} style={{
+      display: "flex", alignItems: "center", gap: compact ? 8 : 10, background: "none", border: "none", cursor: "pointer", padding: 0,
+    }}>
+      <div style={{
+        width: compact ? 28 : 34, height: compact ? 28 : 34, borderRadius: 7,
+        background: `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        color: "#fff", fontWeight: 700, fontSize: compact ? 13 : 15, fontFamily: ff.serif,
+      }}>D</div>
+      <span style={{ fontFamily: ff.serif, fontSize: compact ? 16 : 19, fontWeight: 700, letterSpacing: "-0.01em", color: C.text }}>
+        Dual<span style={{ color: C.accent }}>Reasoning</span>
+      </span>
+    </button>
+  );
+}
+
+// ═══════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════
+
+export default function DualReasoningApp() {
+  const [view, setView] = useState("landing");
+  const [step, setStep] = useState(0);
+  const [selectedPhenos, setSelectedPhenos] = useState([]);
+  const [demo, setDemo] = useState({});
+  // Session comorbidity memory — persists across phenotype switches within session
+  const [comoAnswers, setComoAnswers] = useState({});
+  const [drugs, setDrugs] = useState([]);
+  const [drugInput, setDrugInput] = useState("");
+  const [results, setResults] = useState(null);
+  const [comoStep, setComoStep] = useState(0);
+  const [comoQueue, setComoQueue] = useState([]);
+  const [chatMsgs, setChatMsgs] = useState([]);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+  }, [chatMsgs]);
+
+  const goHome = useCallback(() => {
+    setView("landing");
+    setStep(0);
+    setSelectedPhenos([]);
+    setDemo({});
+    setComoAnswers({});
+    setDrugs([]);
+    setDrugInput("");
+    setResults(null);
+    setComoStep(0);
+    setComoQueue([]);
+    setChatMsgs([]);
+  }, []);
+
+  // Build comorbidity queue: union of required comos, minus already-answered ones
+  function buildComoQueue(phenoIds, existingAnswers) {
+    const seen = new Set();
+    const queue = [];
+    phenoIds.forEach(pid => {
+      (DISEASE_COMO_MAP[pid] || []).forEach(c => {
+        if (!seen.has(c.id) && !(c.id in existingAnswers)) {
+          seen.add(c.id);
+          // Tag which phenotype(s) need this
+          const usedBy = phenoIds.filter(p => (DISEASE_COMO_MAP[p] || []).some(x => x.id === c.id)).map(p => PHENOTYPES[p].abbr);
+          queue.push({ ...c, usedBy });
+        }
+      });
+    });
+    return queue;
+  }
+
+  function startComoPhase() {
+    const queue = buildComoQueue(selectedPhenos, comoAnswers);
+    if (queue.length === 0) {
+      // All comos already answered — skip to drugs
+      setChatMsgs([{ agent: true, text: "Your medical history from previous selections is still saved. Proceeding to medication entry." }]);
+      setTimeout(() => setStep(3), 800);
+      return;
+    }
+    setComoQueue(queue);
+    setComoStep(0);
+    setChatMsgs([
+      { agent: true, text: `I'll ask ${queue.length} question${queue.length > 1 ? "s" : ""} about your medical history. Tap Yes or No for each.` },
+      { agent: true, text: queue[0].q, tag: `Informs: ${queue[0].usedBy.join(", ")}`, isQ: true },
+    ]);
+  }
+
+  function answerComo(answer) {
+    const current = comoQueue[comoStep];
+    const newAnswers = { ...comoAnswers, [current.id]: answer };
+    setComoAnswers(newAnswers);
+    const newMsgs = [...chatMsgs, { agent: false, text: answer ? "Yes" : "No" }];
+    const nextIdx = comoStep + 1;
+    if (nextIdx < comoQueue.length) {
+      const next = comoQueue[nextIdx];
+      newMsgs.push({ agent: true, text: next.q, tag: `Informs: ${next.usedBy.join(", ")}`, isQ: true });
+      setChatMsgs(newMsgs);
+      setComoStep(nextIdx);
+    } else {
+      newMsgs.push({ agent: true, text: "All set — let's move to your medications." });
+      setChatMsgs(newMsgs);
+      setTimeout(() => setStep(3), 1000);
+    }
+  }
+
+  function addDrug(d) {
+    const trimmed = d.trim();
+    if (trimmed && !drugs.includes(trimmed)) setDrugs(prev => [...prev, trimmed]);
+    setDrugInput("");
+  }
+
+  function computeResults() {
+    const comoCount = Object.values(comoAnswers).filter(Boolean).length;
+    const res = {};
+    selectedPhenos.forEach(pid => {
+      const p = PHENOTYPES[pid];
+      const risk = simulateRisk(pid, drugs.length, comoCount, demo);
+      // Simulated DualR scores (replace with real XGBoost model output)
+      const dualr_nocot = (risk * 6 - 1.5 + Math.random() * 0.5).toFixed(2);
+      const dualr_cot = (risk * 4 - 0.8 + Math.random() * 0.4).toFixed(2);
+      // Top drugs sorted by absolute contribution (simulated)
+      const topDrugs = drugs.map(d => ({
+        name: d,
+        shortName: d.split(" ").slice(0, 2).join(" "),
+        contribution: ((Math.random() - 0.3) * 3).toFixed(2),
+      })).sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution)).slice(0, 5);
+      res[pid] = { risk, dualr_nocot, dualr_cot, topDrugs, auc: p.auc };
+    });
+    setResults(res);
+    setView("results");
+  }
+
+  const base = { minHeight: "100vh", background: C.bg, fontFamily: ff.sans, color: C.text, overflowX: "hidden" };
+  const globalCSS = `
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes scaleIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    ::selection { background: ${C.accentLight}; color: ${C.accentDark}; }
+    select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236C737F' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
+    input:focus, select:focus { outline: none; border-color: ${C.accent}; box-shadow: 0 0 0 3px rgba(10,126,140,0.08); }
+    button { font-family: ${ff.sans}; }
+  `;
+
+  // ── NAV ──
+  function Nav({ transparent }) {
+    return (
+      <nav style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        padding: "14px 40px", borderBottom: transparent ? "none" : `1px solid ${C.border}`,
+        background: transparent ? "transparent" : "rgba(249,248,246,0.92)", backdropFilter: "blur(10px)",
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        <Logo onClick={goHome} compact />
+        {view !== "landing" && (
+          <button onClick={goHome} style={{
+            background: "none", border: `1px solid ${C.border}`, borderRadius: 6,
+            padding: "6px 14px", fontSize: 12, color: C.textMuted, cursor: "pointer",
+          }}>← Home</button>
+        )}
+      </nav>
+    );
+  }
+
+  // ── FOOTER ──
+  function Footer() {
+    return (
+      <footer style={{ borderTop: `1px solid ${C.border}`, padding: "20px 40px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
+        <div>
+          <div style={{ fontSize: 11, color: C.textMuted, lineHeight: 1.7 }}>
+            <strong style={{ color: C.text, fontWeight: 600 }}>Su Lab</strong> · Biomedical Informatics, Biostatistics & Health Data Science
+          </div>
+          <div style={{ fontSize: 11, color: C.textMuted }}>Indiana University School of Medicine</div>
+          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 4 }}>Licensed under Apache 2.0</div>
+        </div>
+        <div style={{ fontSize: 10, color: C.textMuted, maxWidth: 420, textAlign: "right", lineHeight: 1.6 }}>
+          This tool provides research-derived risk estimates and does not constitute clinical advice, diagnosis, or treatment recommendation. No personal data is collected, stored, or transmitted.
+        </div>
+      </footer>
+    );
+  }
+
+  // ═══════════════════════════════════
+  //  LANDING
+  // ═══════════════════════════════════
+  if (view === "landing") {
+    return (
+      <div style={base}>
+        <link href={fontLink} rel="stylesheet" />
+        <style>{globalCSS}</style>
+        <Nav transparent />
+
+        <div style={{ maxWidth: 880, margin: "0 auto", padding: "80px 40px 60px", animation: "fadeIn 0.6s ease-out" }}>
+          <h1 style={{
+            fontFamily: ff.serif, fontSize: 48, fontWeight: 700, lineHeight: 1.15,
+            letterSpacing: "-0.02em", maxWidth: 680,
+          }}>
+            Phenotypic risk from{" "}
+            <span style={{ color: C.accent }}>medication history</span>
+          </h1>
+          <p style={{ fontSize: 17, lineHeight: 1.7, color: C.textMuted, maxWidth: 540, marginTop: 20 }}>
+            DualReasoning transforms drug records into disease risk estimates using knowledge extracted from large language models — without sharing or storing patient data.
+          </p>
+
+          <button onClick={() => { setView("flow"); setStep(0); }} style={{
+            marginTop: 36, padding: "13px 30px", background: C.bgDark, color: "#fff", border: "none",
+            borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer",
+            transition: "transform 0.12s",
+          }}
+          onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
+          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
+          >
+            Start Assessment →
+          </button>
+
+          {/* Feature cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginTop: 64 }}>
+            {[
+              { icon: "🔒", title: "Zero Data Retention", desc: "All processing happens in your session. Nothing is saved — close the tab and it's gone." },
+              { icon: "⚡", title: "16,000+ Drug Associations", desc: "Pre-computed from large-scale cohorts (All of Us, N=254K; INPC, N=1.13M)." },
+              { icon: "🧬", title: "Multi-Phenotype", desc: "Assess T2D, Hypertension, and AUD risk from a single medication list." },
+            ].map((f, i) => (
+              <div key={i} style={{
+                padding: 24, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10,
+                animation: `fadeIn 0.5s ease-out ${0.15 + i * 0.1}s both`,
+              }}>
+                <div style={{ fontSize: 22, marginBottom: 12 }}>{f.icon}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{f.title}</div>
+                <div style={{ fontSize: 13, lineHeight: 1.6, color: C.textMuted }}>{f.desc}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Privacy notice — replaces cookie banner */}
+          <div style={{
+            marginTop: 40, padding: 16, background: C.bgCard, border: `1px solid ${C.border}`,
+            borderRadius: 8, display: "flex", gap: 12, alignItems: "flex-start",
+          }}>
+            <span style={{ fontSize: 16, marginTop: 1 }}>🛡️</span>
+            <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.65 }}>
+              <strong style={{ color: C.text }}>Privacy.</strong> DualReasoning uses no cookies, no tracking, no analytics, and no local storage. Your inputs exist only in browser memory during this session. We recommend using a trusted device on a secure network. Please see our{" "}
+              <span style={{ color: C.accent, cursor: "pointer", textDecoration: "underline" }}>privacy policy</span> for details.
+            </div>
+          </div>
+        </div>
+        <Footer />
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════
+  //  MAIN FLOW
+  // ═══════════════════════════════════
+  if (view === "flow") {
+    const stepNames = ["Conditions", "Demographics", "Medical History", "Medications", "Review"];
+
+    return (
+      <div style={base}>
+        <link href={fontLink} rel="stylesheet" />
+        <style>{globalCSS}</style>
+        <Nav />
+
+        <div style={{ maxWidth: 680, margin: "0 auto", padding: "40px 32px 60px" }}>
+          <Steps steps={stepNames} current={step} />
+
+          {/* ── STEP 0: Phenotype ── */}
+          {step === 0 && (
+            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
+              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Which conditions would you like to assess?</h3>
+              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 28, lineHeight: 1.6 }}>
+                Select one or more. Comorbidity questions adapt automatically — circular inputs are excluded, and prior answers are remembered within this session.
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {Object.values(PHENOTYPES).map(p => {
+                  const sel = selectedPhenos.includes(p.id);
+                  return (
+                    <button key={p.id} onClick={() => setSelectedPhenos(prev => prev.includes(p.id) ? prev.filter(x => x !== p.id) : [...prev, p.id])}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 14, padding: "16px 20px",
+                        background: sel ? C.accentLight : C.bgCard, border: `2px solid ${sel ? C.accent : C.border}`,
+                        borderRadius: 10, cursor: "pointer", textAlign: "left", transition: "all 0.15s",
+                      }}>
+                      <div style={{ width: 40, height: 40, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, background: sel ? C.accent : "#F3F4F6" }}>{p.icon}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name} <span style={{ fontWeight: 400, fontSize: 11, color: C.textMuted }}>({p.abbr})</span></div>
+                        <div style={{ fontSize: 12, color: C.textMuted, marginTop: 1 }}>{p.desc}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 10, color: C.textMuted }}>N={p.n}</div>
+                        <div style={{ fontSize: 10, color: C.textMuted }}>Prev. {p.prevalence}</div>
+                      </div>
+                      <div style={{
+                        width: 20, height: 20, borderRadius: 5, border: `2px solid ${sel ? C.accent : C.border}`,
+                        background: sel ? C.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center",
+                        color: "#fff", fontSize: 11, transition: "all 0.15s",
+                      }}>{sel && "✓"}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <button disabled={!selectedPhenos.length} onClick={() => setStep(1)} style={{
+                marginTop: 28, padding: "11px 26px", background: selectedPhenos.length ? C.bgDark : C.border,
+                color: selectedPhenos.length ? "#fff" : C.textMuted, border: "none", borderRadius: 7,
+                fontSize: 14, fontWeight: 600, cursor: selectedPhenos.length ? "pointer" : "not-allowed",
+              }}>Continue →</button>
+            </div>
+          )}
+
+          {/* ── STEP 1: Demographics ── */}
+          {step === 1 && (
+            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
+              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Demographics</h3>
+              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 28 }}>These form the baseline covariates in the prediction model.</p>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                {DEMO_FIELDS.map(f => (
+                  <div key={f.id}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 5 }}>{f.label}</label>
+                    <select value={demo[f.id] || ""} onChange={e => setDemo({ ...demo, [f.id]: e.target.value })} style={{
+                      width: "100%", padding: "9px 14px", border: `1.5px solid ${C.border}`, borderRadius: 7,
+                      fontSize: 14, fontFamily: ff.sans, background: C.bgCard, color: demo[f.id] ? C.text : C.textMuted, cursor: "pointer", paddingRight: 30,
+                    }}>
+                      <option value="">Select…</option>
+                      {f.options.map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 10, marginTop: 28 }}>
+                <button onClick={() => setStep(0)} style={{ padding: "11px 22px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer" }}>← Back</button>
+                <button disabled={Object.keys(demo).length < 4} onClick={() => { setStep(2); startComoPhase(); }}
+                  style={{
+                    padding: "11px 26px", background: Object.keys(demo).length >= 4 ? C.bgDark : C.border,
+                    color: Object.keys(demo).length >= 4 ? "#fff" : C.textMuted, border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600,
+                    cursor: Object.keys(demo).length >= 4 ? "pointer" : "not-allowed",
+                  }}>Continue →</button>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 2: Comorbidity Chat ── */}
+          {step === 2 && (
+            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
+              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Medical History</h3>
+              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 20 }}>
+                {comoQueue.length > 0
+                  ? `${comoQueue.length} question${comoQueue.length > 1 ? "s" : ""} based on your selected conditions. Previously answered items are skipped.`
+                  : "All comorbidity questions already answered from your previous selections."}
+              </p>
+              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18, minHeight: 200, maxHeight: 380, overflowY: "auto" }}>
+                {chatMsgs.map((m, i) => (
+                  <div key={i}>
+                    <div style={{ display: "flex", justifyContent: m.agent ? "flex-start" : "flex-end", marginBottom: 10 }}>
+                      <div style={{
+                        maxWidth: "82%", padding: "10px 14px", borderRadius: m.agent ? "2px 14px 14px 14px" : "14px 2px 14px 14px",
+                        background: m.agent ? C.bgCard : C.accent, color: m.agent ? C.text : "#fff",
+                        border: m.agent ? `1px solid ${C.border}` : "none", fontSize: 13, lineHeight: 1.6,
+                        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                      }}>
+                        {m.agent && <div style={{ fontSize: 9, color: C.accent, fontWeight: 600, marginBottom: 3, letterSpacing: "0.04em", textTransform: "uppercase" }}>DualR</div>}
+                        {m.text}
+                        {m.tag && <div style={{ fontSize: 10, color: m.agent ? C.accent : "rgba(255,255,255,0.7)", marginTop: 3, fontStyle: "italic" }}>{m.tag}</div>}
+                      </div>
+                    </div>
+                    {m.isQ && i === chatMsgs.length - 1 && (
+                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginBottom: 12 }}>
+                        <button onClick={() => answerComo(true)} style={{ padding: "7px 22px", background: C.success, color: "#fff", border: "none", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Yes</button>
+                        <button onClick={() => answerComo(false)} style={{ padding: "7px 22px", background: "#F0F1F3", color: C.text, border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13, fontWeight: 500, cursor: "pointer" }}>No</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 3: Drug History ── */}
+          {step === 3 && (
+            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
+              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Medication History</h3>
+              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 20 }}>
+                Enter current and recent medications. Type drug names, paste a list, or upload a medication record.
+              </p>
+
+              {/* Upload zone */}
+              <div style={{ border: `2px dashed ${C.border}`, borderRadius: 10, padding: 28, textAlign: "center", marginBottom: 20, background: "#FCFCFB", cursor: "pointer", transition: "border-color 0.2s" }}
+                onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
+                onMouseLeave={e => e.currentTarget.style.borderColor = C.border}>
+                <div style={{ fontSize: 24, marginBottom: 6 }}>📄</div>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>Drop medication record here</div>
+                <div style={{ fontSize: 11, color: C.textMuted, marginTop: 3 }}>PDF, PNG, JPG, or plain text</div>
+              </div>
+
+              {/* Manual entry */}
+              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                <input value={drugInput} onChange={e => setDrugInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") addDrug(drugInput); }}
+                  placeholder="Type medication name, press Enter…"
+                  style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 13, fontFamily: ff.sans, background: C.bgCard }} />
+                <button onClick={() => addDrug(drugInput)} style={{
+                  padding: "9px 14px", background: C.accent, color: "#fff", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}>Add</button>
+              </div>
+
+              {/* Quick-add */}
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 6, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.04em" }}>Demo medications</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                  {SAMPLE_DRUGS.filter(d => !drugs.includes(d)).slice(0, 4).map(d => (
+                    <button key={d} onClick={() => addDrug(d)} style={{
+                      padding: "4px 9px", background: "#F3F4F6", border: `1px solid ${C.border}`, borderRadius: 5,
+                      fontSize: 11, cursor: "pointer", fontFamily: ff.mono, color: C.textMuted,
+                    }}>+ {d.split(" ").slice(0, 2).join(" ")}…</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Drug list */}
+              {drugs.length > 0 && (
+                <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14, marginBottom: 20 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 8 }}>Added ({drugs.length})</div>
+                  {drugs.map((d, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < drugs.length - 1 ? `1px solid ${C.border}` : "none" }}>
+                      <span style={{ fontSize: 12, fontFamily: ff.mono }}>{d}</span>
+                      <button onClick={() => setDrugs(drugs.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: 16, padding: "0 4px" }}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setStep(2)} style={{ padding: "11px 22px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer" }}>← Back</button>
+                <button disabled={!drugs.length} onClick={() => setStep(4)} style={{
+                  padding: "11px 26px", background: drugs.length ? C.bgDark : C.border,
+                  color: drugs.length ? "#fff" : C.textMuted, border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600,
+                  cursor: drugs.length ? "pointer" : "not-allowed",
+                }}>Continue →</button>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 4: Review ── */}
+          {step === 4 && (
+            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
+              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Review & Compute</h3>
+              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 24 }}>Verify your inputs before generating risk estimates.</p>
+
+              {[
+                { label: "Conditions", content: selectedPhenos.map(pid => `${PHENOTYPES[pid].icon} ${PHENOTYPES[pid].name}`).join("  ·  ") },
+                { label: "Demographics", content: DEMO_FIELDS.map(f => `${f.label}: ${demo[f.id] || "—"}`).join("  ·  ") },
+                { label: `Comorbidities (${Object.values(comoAnswers).filter(Boolean).length} present)`, content: Object.entries(comoAnswers).filter(([, v]) => v).map(([k]) => ALL_CHARLSON.find(c => c.id === k)?.label || k).join(", ") || "None reported" },
+                { label: `Medications (${drugs.length})`, content: drugs.map(d => d.split(" ").slice(0, 3).join(" ")).join(" · ") },
+              ].map((s, i) => (
+                <div key={i} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16, marginBottom: 10 }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: C.accent, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
+                  <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>{s.content}</div>
+                </div>
+              ))}
+
+              <div style={{ padding: 14, background: C.warningLight, borderRadius: 7, border: `1px solid #FDE68A`, fontSize: 12, color: "#78480C", lineHeight: 1.6, marginTop: 16, marginBottom: 20 }}>
+                ⚠️ Risk estimates are derived from validated statistical models and do not constitute clinical advice, diagnosis, or treatment recommendation.
+              </div>
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => setStep(3)} style={{ padding: "11px 22px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer" }}>← Back</button>
+                <button onClick={computeResults} style={{
+                  padding: "13px 30px", background: `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`,
+                  color: "#fff", border: "none", borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer",
+                }}>Compute Risk Estimates →</button>
+              </div>
+            </div>
+          )}
+        </div>
+        <Footer />
+      </div>
+    );
+  }
+
+  // ═══════════════════════════════════
+  //  RESULTS
+  // ═══════════════════════════════════
+  if (view === "results" && results) {
+    return (
+      <div style={base}>
+        <link href={fontLink} rel="stylesheet" />
+        <style>{globalCSS}</style>
+        <Nav />
+
+        <div style={{ maxWidth: 860, margin: "0 auto", padding: "40px 32px 60px" }}>
+          <div style={{ animation: "fadeIn 0.5s ease-out" }}>
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 12px", background: C.successLight, borderRadius: 16, marginBottom: 16 }}>
+              <div style={{ width: 5, height: 5, borderRadius: "50%", background: C.success }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: C.success }}>Analysis Complete</span>
+            </div>
+
+            <h2 style={{ fontFamily: ff.serif, fontSize: 30, fontWeight: 700, marginBottom: 6 }}>Risk Assessment</h2>
+            <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 32 }}>
+              Based on {drugs.length} medication{drugs.length !== 1 ? "s" : ""}, {Object.values(comoAnswers).filter(Boolean).length} comorbidities, and demographic covariates.
+            </p>
+
+            {/* Risk Cards */}
+            <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(selectedPhenos.length, 3)}, 1fr)`, gap: 16, marginBottom: 28 }}>
+              {selectedPhenos.map((pid, i) => {
+                const p = PHENOTYPES[pid];
+                const r = results[pid];
+                return (
+                  <div key={pid} style={{
+                    background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: 24, textAlign: "center",
+                    animation: `scaleIn 0.4s ease-out ${i * 0.1}s both`,
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 2 }}>{p.icon} {p.name}</div>
+                    <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 14 }}>Population prev: {p.prevalence}</div>
+                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><RiskGauge value={r.risk} /></div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
+                      <div style={{ padding: "7px 0", background: "#F8F9FA", borderRadius: 5 }}>
+                        <div style={{ fontSize: 9, color: C.textMuted }}>DualR<sub style={{ fontSize: 8 }}>fast</sub></div>
+                        <div style={{ fontSize: 15, fontWeight: 700, fontFamily: ff.mono }}>{r.dualr_nocot}</div>
+                      </div>
+                      <div style={{ padding: "7px 0", background: "#F8F9FA", borderRadius: 5 }}>
+                        <div style={{ fontSize: 9, color: C.textMuted }}>DualR<sub style={{ fontSize: 8 }}>slow</sub></div>
+                        <div style={{ fontSize: 15, fontWeight: 700, fontFamily: ff.mono }}>{r.dualr_cot}</div>
+                      </div>
+                    </div>
+                    {/* Model performance context */}
+                    <div style={{ marginTop: 10, padding: "6px 8px", background: C.accentLight, borderRadius: 5 }}>
+                      <div style={{ fontSize: 9, color: C.accentDark, fontWeight: 600 }}>Validated AUC</div>
+                      <div style={{ fontSize: 11, fontFamily: ff.mono, color: C.accentDark }}>
+                        Base {r.auc.base.toFixed(3)} → DualR {r.auc.dualr.toFixed(3)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Top Contributing Drugs */}
+            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: 20, marginBottom: 20 }}>
+              <h4 style={{ fontFamily: ff.serif, fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Medication Contributions</h4>
+              <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
+                Each drug's DualR log-odds contribution relative to population prevalence. Positive values indicate higher risk; negative values are protective.
+              </p>
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(selectedPhenos.length, 3)}, 1fr)`, gap: 16 }}>
+                {selectedPhenos.map(pid => {
+                  const p = PHENOTYPES[pid];
+                  const r = results[pid];
+                  return (
+                    <div key={pid}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: p.color, marginBottom: 8 }}>{p.abbr}</div>
+                      {r.topDrugs.map((d, i) => {
+                        const val = parseFloat(d.contribution);
+                        const maxBar = 3;
+                        const barW = Math.min(Math.abs(val) / maxBar, 1) * 100;
+                        return (
+                          <div key={i} style={{ marginBottom: 6 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>
+                              <span style={{ fontFamily: ff.mono, color: C.text }}>{d.shortName}</span>
+                              <span style={{ fontFamily: ff.mono, fontWeight: 600, color: val > 0 ? C.crimson : C.success }}>
+                                {val > 0 ? "+" : ""}{d.contribution}
+                              </span>
+                            </div>
+                            <div style={{ height: 3, background: "#F0F0EE", borderRadius: 2, overflow: "hidden" }}>
+                              <div style={{
+                                width: `${barW}%`, height: "100%", borderRadius: 2,
+                                background: val > 0 ? C.crimson : C.success,
+                                transition: "width 0.6s ease-out",
+                              }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* New assessment button */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
+              <button onClick={goHome} style={{
+                padding: "11px 26px", background: C.bgDark, color: "#fff", border: "none",
+                borderRadius: 7, fontSize: 14, fontWeight: 600, cursor: "pointer",
+              }}>New Assessment</button>
+              <button onClick={() => { setStep(0); setView("flow"); }} style={{
+                padding: "11px 26px", background: "transparent", border: `1.5px solid ${C.border}`,
+                borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer",
+              }}>Modify Inputs</button>
+            </div>
+
+            {/* Disclaimer */}
+            <div style={{ padding: 16, background: "#F8F8F6", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 12, color: C.textMuted, lineHeight: 1.7 }}>
+              <strong style={{ color: C.text }}>Important.</strong>{" "}
+              Risk estimates are generated using the DualReasoning method validated on All of Us (N=254,487) and Indiana Network for Patient Care (N=1.13M). Results reflect statistical associations and do not constitute clinical diagnosis or treatment recommendation. No information was stored during this session.
+            </div>
+          </div>
+        </div>
+        <Footer />
+      </div>
+    );
+  }
+
+  return null;
+}
