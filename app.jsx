@@ -3,7 +3,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 /*
  * DualReasoning Clinical Risk Assessment Platform
  * License: Apache-2.0
- * Su Lab · Biomedical Informatics, Biostatistics & Health Data Science
+ * Copyright (C) 2026 The Authors.
+ * Su Lab · Biomedical Informatics,
+ * Biostatistics & Health Data Science
  * Indiana University School of Medicine
  *
  * Fonts: Libre Baskerville (SIL OFL), Source Sans 3 (SIL OFL), JetBrains Mono (SIL OFL)
