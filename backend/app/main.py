@@ -92,7 +92,10 @@ def _load_runtime_cache():
                         if mode not in drug_probs[disease][drug]:
                             drug_probs[disease][drug][mode] = p
                             count += 1
-                    except (KeyError, ValueError, json.JSONDecodeError):
+                    except (KeyError, ValueError, json.JSONDecodeError) as e:
+                        logger.error(
+                            f"Corrupt cache entry in {fpath}, line: {line.strip()[:100]}; error: {e}"
+                        )
                         continue
             if count:
                 logger.info(f"Loaded {count} cached novel drug probs from {fpath}")
@@ -178,18 +181,21 @@ def _write_cache(drug: str, disease: str, mode: str, probability: float):
         with open(fpath, "a") as f:
             f.write(json.dumps({"drug": drug, "probability": probability}) + "\n")
     except Exception as e:
-        logger.warning(f"Could not write runtime cache: {e}")
+        logger.error(f"Runtime cache write failed for {drug}/{disease}/{mode}: {e}")
+        raise
 
 
 async def query_catchat(drug_name: str, disease: str, use_cot: bool) -> float:
     """
     Query MSU CatChat for P(disease|drug) for a drug absent from the lookup tables.
     Reads CATCHAT_BASE_URL, CATCHAT_MODEL, CATCHAT_API_KEY from environment.
-    Returns disease prevalence as fallback if CatChat is unconfigured or fails.
+    Raises RuntimeError if CatChat is unconfigured, the request fails, or no probability is parsed.
     """
     if not CATCHAT_BASE_URL or not CATCHAT_MODEL:
-        logger.warning(f"CatChat not configured; using prevalence for novel drug: {drug_name}")
-        return PREVALENCES.get(disease, 0.1)
+        raise RuntimeError(
+            f"CatChat not configured (CATCHAT_BASE_URL={CATCHAT_BASE_URL!r}, "
+            f"CATCHAT_MODEL={CATCHAT_MODEL!r}); cannot score novel drug: {drug_name}"
+        )
 
     disease_names = {
         "t2d": "type 2 diabetes",
@@ -231,11 +237,16 @@ async def query_catchat(drug_name: str, disease: str, use_cot: bool) -> float:
             numbers = re.findall(r"0\.\d+", text)
             if numbers:
                 return float(numbers[-1])
-            logger.warning(f"CatChat returned no probability for {drug_name}; using prevalence")
-            return PREVALENCES.get(disease, 0.1)
+            raise RuntimeError(
+                f"CatChat response for {drug_name} contained no parseable probability. "
+                f"Raw response: {text[:200]}"
+            )
+    except RuntimeError:
+        raise
     except Exception as e:
-        logger.error(f"CatChat query failed for {drug_name}: {e}")
-        return PREVALENCES.get(disease, 0.1)
+        raise RuntimeError(
+            f"CatChat query failed for drug={drug_name}, disease={disease}: {e}"
+        ) from e
 
 
 # ═══════════════════════════════════════════
@@ -299,7 +310,13 @@ async def predict(req: PredictRequest):
             for drug in novel_drugs[:10]:  # cap at 10 per request
                 drug_clean = drug.strip()
                 for use_cot, mode in [(False, "nocot"), (True, "cot")]:
-                    p = await query_catchat(drug_clean, disease, use_cot)
+                    try:
+                        p = await query_catchat(drug_clean, disease, use_cot)
+                    except RuntimeError as e:
+                        raise HTTPException(
+                            502,
+                            f"Novel drug scoring failed for '{drug_clean}': {e}"
+                        )
                     if drug_clean not in drug_probs[disease]:
                         drug_probs[disease][drug_clean] = {}
                     drug_probs[disease][drug_clean][mode] = p
