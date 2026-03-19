@@ -108,6 +108,17 @@ const SAMPLE_DRUGS = [
   "gabapentin 300 MG Oral Capsule",
 ];
 
+// ── Responsive width hook ──
+function useIsMobile() {
+  const [mobile, setMobile] = useState(typeof window !== "undefined" && window.innerWidth < 641);
+  useEffect(() => {
+    const fn = () => setMobile(window.innerWidth < 641);
+    window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
+  }, []);
+  return mobile;
+}
+
 // ── Risk Gauge ──
 function RiskGauge({ value, size = 150 }) {
   const pct = Math.round(value * 100);
@@ -140,7 +151,7 @@ function RiskGauge({ value, size = 150 }) {
 // ── Step Bar ──
 function Steps({ steps, current }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: 36 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: 36, flexWrap: "nowrap", overflowX: "auto" }}>
       {steps.map((s, i) => (
         <div key={i} style={{ display: "flex", alignItems: "center" }}>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
@@ -151,10 +162,11 @@ function Steps({ steps, current }) {
               color: i <= current ? "#fff" : C.textMuted,
               border: `2px solid ${i <= current ? C.accent : C.border}`,
               transition: "all 0.3s",
+              flexShrink: 0,
             }}>{i < current ? "✓" : i + 1}</div>
-            <span style={{ fontSize: 11, fontWeight: i === current ? 600 : 400, color: i <= current ? C.accent : C.textMuted, fontFamily: ff.sans, whiteSpace: "nowrap" }}>{s}</span>
+            <span className="dualr-step-label" style={{ fontSize: 11, fontWeight: i === current ? 600 : 400, color: i <= current ? C.accent : C.textMuted, fontFamily: ff.sans, whiteSpace: "nowrap" }}>{s}</span>
           </div>
-          {i < steps.length - 1 && <div style={{ width: 40, height: 2, background: i < current ? C.accent : C.border, margin: "0 6px", marginBottom: 18, transition: "background 0.3s" }} />}
+          {i < steps.length - 1 && <div className="dualr-step-connector" style={{ height: 2, background: i < current ? C.accent : C.border, margin: "0 6px", marginBottom: 18, transition: "background 0.3s", flexShrink: 0 }} />}
         </div>
       ))}
     </div>
@@ -335,14 +347,88 @@ export default function App() {
     select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236C737F' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
     input:focus, select:focus { outline: none; border-color: ${C.accent}; box-shadow: 0 0 0 3px rgba(10,126,140,0.08); }
     button { font-family: ${ff.sans}; }
+
+    /* ── Responsive layout helpers ── */
+    .dualr-page-pad   { padding: 40px 32px 60px; }
+    .dualr-landing-pad{ padding: 80px 40px 60px; }
+    .dualr-nav-pad    { padding: 14px 40px; }
+    .dualr-footer-pad { padding: 20px 40px; }
+
+    .dualr-hero-h1    { font-size: 48px; }
+    .dualr-hero-p     { font-size: 17px; }
+    .dualr-step-h3    { font-size: 26px; }
+    .dualr-results-h2 { font-size: 30px; }
+
+    /* 3-col feature grid on landing */
+    .dualr-feature-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-top: 64px; }
+    /* Risk cards grid */
+    .dualr-risk-grid    { display: grid; gap: 16px; margin-bottom: 28px; }
+    .dualr-risk-grid-1  { grid-template-columns: 1fr; }
+    .dualr-risk-grid-2  { grid-template-columns: 1fr 1fr; }
+    .dualr-risk-grid-3  { grid-template-columns: 1fr 1fr 1fr; }
+    /* Drug contribution grid */
+    .dualr-drug-grid-1  { display: grid; grid-template-columns: 1fr; gap: 16px; }
+    .dualr-drug-grid-2  { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .dualr-drug-grid-3  { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    /* Demo selects */
+    .dualr-demo-grid    { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    /* Steps bar */
+    .dualr-step-label { display: inline; }
+    .dualr-step-connector { width: 40px; }
+
+    /* Buttons */
+    .dualr-btn-primary { padding: 13px 30px; font-size: 15px; }
+    .dualr-btn-back    { padding: 11px 22px; font-size: 14px; }
+    .dualr-btn-cont    { padding: 11px 26px; font-size: 14px; }
+
+    /* Touch: bigger tap targets on mobile */
+    @media (max-width: 640px) {
+      .dualr-footer-disclaimer { text-align: left !important; max-width: 100% !important; }
+      .dualr-page-pad    { padding: 24px 16px 48px; }
+      .dualr-landing-pad { padding: 48px 20px 48px; }
+      .dualr-nav-pad     { padding: 12px 16px; }
+      .dualr-footer-pad  { padding: 20px 16px; }
+
+      .dualr-hero-h1    { font-size: 30px; letter-spacing: -0.01em; }
+      .dualr-hero-p     { font-size: 15px; }
+      .dualr-step-h3    { font-size: 21px; }
+      .dualr-results-h2 { font-size: 22px; }
+
+      .dualr-feature-grid { grid-template-columns: 1fr; margin-top: 40px; }
+      .dualr-risk-grid-2, .dualr-risk-grid-3 { grid-template-columns: 1fr; }
+      .dualr-drug-grid-2, .dualr-drug-grid-3 { grid-template-columns: 1fr; }
+      .dualr-demo-grid   { grid-template-columns: 1fr; }
+
+      .dualr-step-label  { display: none; }
+      .dualr-step-connector { width: 20px; }
+
+      .dualr-btn-primary { padding: 14px 22px; font-size: 15px; width: 100%; }
+      .dualr-btn-back  { padding: 13px 18px; font-size: 14px; min-height: 44px; }
+      .dualr-btn-cont  { padding: 13px 18px; font-size: 14px; min-height: 44px; flex: 1; }
+
+      input, select { font-size: 16px !important; /* prevents iOS zoom */ min-height: 44px; }
+    }
+
+    @media (min-width: 641px) and (max-width: 900px) {
+      .dualr-page-pad    { padding: 32px 24px 56px; }
+      .dualr-landing-pad { padding: 60px 28px 56px; }
+      .dualr-nav-pad     { padding: 14px 24px; }
+      .dualr-footer-pad  { padding: 20px 24px; }
+
+      .dualr-hero-h1    { font-size: 36px; }
+      .dualr-feature-grid { grid-template-columns: 1fr 1fr; }
+      .dualr-risk-grid-3  { grid-template-columns: 1fr 1fr; }
+      .dualr-drug-grid-3  { grid-template-columns: 1fr 1fr; }
+    }
   `;
 
   // ── NAV ──
   function Nav({ transparent }) {
     return (
-      <nav style={{
+      <nav className="dualr-nav-pad" style={{
         display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "14px 40px", borderBottom: transparent ? "none" : `1px solid ${C.border}`,
+        borderBottom: transparent ? "none" : `1px solid ${C.border}`,
         background: transparent ? "transparent" : "rgba(249,248,246,0.92)", backdropFilter: "blur(10px)",
         position: "sticky", top: 0, zIndex: 100,
       }}>
@@ -360,15 +446,16 @@ export default function App() {
   // ── FOOTER ──
   function Footer() {
     return (
-      <footer style={{ borderTop: `1px solid ${C.border}`, padding: "20px 40px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
+      <footer className="dualr-footer-pad" style={{ borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
         <div>
           <div style={{ fontSize: 11, color: C.textMuted, lineHeight: 1.7 }}>
-            <strong style={{ color: C.text, fontWeight: 600 }}>Su Lab</strong> · Biomedical Informatics, Biostatistics & Health Data Science
+            <strong style={{ color: C.text, fontWeight: 600 }}>Su Lab</strong> · Biostatistics & Health Data Science
           </div>
           <div style={{ fontSize: 11, color: C.textMuted }}>Indiana University School of Medicine</div>
           <div style={{ fontSize: 10, color: C.textMuted, marginTop: 4 }}>Licensed under Apache 2.0</div>
         </div>
-        <div style={{ fontSize: 10, color: C.textMuted, maxWidth: 420, textAlign: "right", lineHeight: 1.6 }}>
+        <div style={{ fontSize: 10, color: C.textMuted, maxWidth: 420, textAlign: "right", lineHeight: 1.6 }}
+          className="dualr-footer-disclaimer">
           This tool provides research-derived risk estimates and does not constitute clinical advice, diagnosis, or treatment recommendation. No personal data is collected, stored, or transmitted.
         </div>
       </footer>
@@ -382,24 +469,25 @@ export default function App() {
     return (
       <div style={base}>
         <link href={fontLink} rel="stylesheet" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
         <style>{globalCSS}</style>
         <Nav transparent />
 
-        <div style={{ maxWidth: 880, margin: "0 auto", padding: "80px 40px 60px", animation: "fadeIn 0.6s ease-out" }}>
-          <h1 style={{
-            fontFamily: ff.serif, fontSize: 48, fontWeight: 700, lineHeight: 1.15,
+        <div className="dualr-landing-pad" style={{ maxWidth: 880, margin: "0 auto", animation: "fadeIn 0.6s ease-out" }}>
+          <h1 className="dualr-hero-h1" style={{
+            fontFamily: ff.serif, fontWeight: 700, lineHeight: 1.15,
             letterSpacing: "-0.02em", maxWidth: 680,
           }}>
             Phenotypic risk from{" "}
             <span style={{ color: C.accent }}>medication history</span>
           </h1>
-          <p style={{ fontSize: 17, lineHeight: 1.7, color: C.textMuted, maxWidth: 540, marginTop: 20 }}>
+          <p className="dualr-hero-p" style={{ lineHeight: 1.7, color: C.textMuted, maxWidth: 540, marginTop: 20 }}>
             DualR transforms drug records into disease risk estimates using knowledge extracted from large language models — without sharing or storing patient data.
           </p>
 
-          <button onClick={() => { setView("flow"); setStep(0); }} style={{
-            marginTop: 36, padding: "13px 30px", background: C.bgDark, color: "#fff", border: "none",
-            borderRadius: 8, fontSize: 15, fontWeight: 600, cursor: "pointer",
+          <button onClick={() => { setView("flow"); setStep(0); }} className="dualr-btn-primary" style={{
+            marginTop: 36, background: C.bgDark, color: "#fff", border: "none",
+            borderRadius: 8, fontWeight: 600, cursor: "pointer",
             transition: "transform 0.12s",
           }}
           onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
@@ -409,7 +497,7 @@ export default function App() {
           </button>
 
           {/* Feature cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginTop: 64 }}>
+          <div className="dualr-feature-grid">
             {[
               { icon: "🔒", title: "Zero Data Retention", desc: "All processing happens in your session. Nothing is saved — close the tab and it's gone." },
               { icon: "⚡", title: "16,000+ Drug Associations", desc: "Pre-computed from large-scale cohorts (All of Us, N=254K; INPC, N=1.13M)." },
@@ -451,16 +539,17 @@ export default function App() {
     return (
       <div style={base}>
         <link href={fontLink} rel="stylesheet" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
         <style>{globalCSS}</style>
         <Nav />
 
-        <div style={{ maxWidth: 680, margin: "0 auto", padding: "40px 32px 60px" }}>
+        <div className="dualr-page-pad" style={{ maxWidth: 680, margin: "0 auto" }}>
           <Steps steps={stepNames} current={step} />
 
           {/* ── STEP 0: Phenotype ── */}
           {step === 0 && (
             <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Which conditions would you like to assess?</h3>
+              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Which conditions would you like to assess?</h3>
               <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 28, lineHeight: 1.6 }}>
                 Select one or more. Comorbidity questions adapt automatically — circular inputs are excluded, and prior answers are remembered within this session.
               </p>
@@ -503,7 +592,7 @@ export default function App() {
           {/* ── STEP 1: Demographics ── */}
           {step === 1 && (
             <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Demographics</h3>
+              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Demographics</h3>
               <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 28 }}>These form the baseline covariates in the prediction model.</p>
 
               {/* Age — numeric input */}
@@ -519,7 +608,7 @@ export default function App() {
               </div>
 
               {/* Categorical selects */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div className="dualr-demo-grid">
                 {DEMO_FIELDS.map(f => (
                   <div key={f.id}>
                     <label style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 5 }}>{f.label}</label>
@@ -534,8 +623,8 @@ export default function App() {
                 ))}
               </div>
 
-              <div style={{ display: "flex", gap: 10, marginTop: 28 }}>
-                <button onClick={() => setStep(0)} style={{ padding: "11px 22px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer" }}>← Back</button>
+              <div className="dualr-btn-row" style={{ display: "flex", gap: 10, marginTop: 28, flexWrap: "wrap" }}>
+                <button onClick={() => setStep(0)} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
                 {(() => {
                   const ageVal = parseInt(demo.age, 10);
                   const valid = !isNaN(ageVal) && ageVal >= 18 && ageVal <= 120 && demo.gender && demo.race && demo.ethnicity;
@@ -554,7 +643,7 @@ export default function App() {
           {/* ── STEP 2: Comorbidity Chat ── */}
           {step === 2 && (
             <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Medical History</h3>
+              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Medical History</h3>
               <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 20 }}>
                 {comoQueue.length > 0
                   ? `${comoQueue.length} question${comoQueue.length > 1 ? "s" : ""} based on your selected conditions. Previously answered items are skipped.`
@@ -576,9 +665,9 @@ export default function App() {
                       </div>
                     </div>
                     {m.isQ && i === chatMsgs.length - 1 && (
-                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginBottom: 12 }}>
-                        <button onClick={() => answerComo(true)} style={{ padding: "7px 22px", background: C.success, color: "#fff", border: "none", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Yes</button>
-                        <button onClick={() => answerComo(false)} style={{ padding: "7px 22px", background: "#F0F1F3", color: C.text, border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13, fontWeight: 500, cursor: "pointer" }}>No</button>
+                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 12 }}>
+                        <button onClick={() => answerComo(true)} style={{ padding: "10px 28px", background: C.success, color: "#fff", border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600, cursor: "pointer", minHeight: 44 }}>Yes</button>
+                        <button onClick={() => answerComo(false)} style={{ padding: "10px 28px", background: "#F0F1F3", color: C.text, border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer", minHeight: 44 }}>No</button>
                       </div>
                     )}
                   </div>
@@ -591,7 +680,7 @@ export default function App() {
           {/* ── STEP 3: Drug History ── */}
           {step === 3 && (
             <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Medication History</h3>
+              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Medication History</h3>
               <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 20 }}>
                 Enter current and recent medications. Type drug names, paste a list, or upload a medication record.
               </p>
@@ -610,9 +699,9 @@ export default function App() {
                 <input value={drugInput} onChange={e => setDrugInput(e.target.value)}
                   onKeyDown={e => { if (e.key === "Enter") addDrug(drugInput); }}
                   placeholder="Type medication name, press Enter…"
-                  style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 13, fontFamily: ff.sans, background: C.bgCard }} />
+                  style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 13, fontFamily: ff.sans, background: C.bgCard, minHeight: 44 }} />
                 <button onClick={() => addDrug(drugInput)} style={{
-                  padding: "9px 14px", background: C.accent, color: "#fff", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  padding: "9px 16px", background: C.accent, color: "#fff", border: "none", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", minHeight: 44, whiteSpace: "nowrap",
                 }}>Add</button>
               </div>
 
@@ -642,8 +731,8 @@ export default function App() {
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={() => setStep(2)} style={{ padding: "11px 22px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer" }}>← Back</button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={() => setStep(2)} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
                 <button disabled={!drugs.length} onClick={() => setStep(4)} style={{
                   padding: "11px 26px", background: drugs.length ? C.bgDark : C.border,
                   color: drugs.length ? "#fff" : C.textMuted, border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600,
@@ -656,7 +745,7 @@ export default function App() {
           {/* ── STEP 4: Review ── */}
           {step === 4 && (
             <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 style={{ fontFamily: ff.serif, fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Review & Compute</h3>
+              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Review & Compute</h3>
               <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 24 }}>Verify your inputs before generating risk estimates.</p>
 
               {[
@@ -680,8 +769,8 @@ export default function App() {
                   {error}
                 </div>
               )}
-              <div style={{ display: "flex", gap: 10 }}>
-                <button onClick={() => setStep(3)} style={{ padding: "11px 22px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer" }}>← Back</button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button onClick={() => setStep(3)} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
                 <button onClick={fetchResults} disabled={loading} style={{
                   padding: "13px 30px", background: loading ? C.border : `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`,
                   color: loading ? C.textMuted : "#fff", border: "none", borderRadius: 8, fontSize: 15, fontWeight: 600,
@@ -700,26 +789,29 @@ export default function App() {
   //  RESULTS
   // ═══════════════════════════════════
   if (view === "results" && results) {
+    const isMobile = useIsMobile(); // eslint-disable-line react-hooks/rules-of-hooks
+    const gaugeSize = isMobile ? 110 : 150;
     return (
       <div style={base}>
         <link href={fontLink} rel="stylesheet" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
         <style>{globalCSS}</style>
         <Nav />
 
-        <div style={{ maxWidth: 860, margin: "0 auto", padding: "40px 32px 60px" }}>
+        <div className="dualr-page-pad" style={{ maxWidth: 860, margin: "0 auto" }}>
           <div style={{ animation: "fadeIn 0.5s ease-out" }}>
             <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 12px", background: C.successLight, borderRadius: 16, marginBottom: 16 }}>
               <div style={{ width: 5, height: 5, borderRadius: "50%", background: C.success }} />
               <span style={{ fontSize: 11, fontWeight: 600, color: C.success }}>Analysis Complete</span>
             </div>
 
-            <h2 style={{ fontFamily: ff.serif, fontSize: 30, fontWeight: 700, marginBottom: 6 }}>Risk Assessment</h2>
+            <h2 className="dualr-results-h2" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Risk Assessment</h2>
             <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 32 }}>
               Based on {drugs.length} medication{drugs.length !== 1 ? "s" : ""}, {Object.values(comoAnswers).filter(Boolean).length} comorbidities, and demographic covariates.
             </p>
 
             {/* Risk Cards */}
-            <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(selectedPhenos.length, 3)}, 1fr)`, gap: 16, marginBottom: 28 }}>
+            <div className={`dualr-risk-grid dualr-risk-grid-${Math.min(selectedPhenos.length, 3)}`}>
               {selectedPhenos.map((pid, i) => {
                 const p = PHENOTYPES[pid];
                 const r = results[pid];
@@ -730,7 +822,7 @@ export default function App() {
                   }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 2 }}>{p.icon} {p.name}</div>
                     <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 14 }}>Population prev: {p.prevalence}</div>
-                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><RiskGauge value={r.risk} /></div>
+                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><RiskGauge value={r.risk} size={gaugeSize} /></div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
                       <div style={{ padding: "7px 0", background: "#F8F9FA", borderRadius: 5 }}>
                         <div style={{ fontSize: 9, color: C.textMuted }}>DualR<sub style={{ fontSize: 8 }}>fast</sub></div>
@@ -759,7 +851,7 @@ export default function App() {
               <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
                 Each drug's DualR log-odds contribution relative to population prevalence. Positive values indicate higher risk; negative values are protective.
               </p>
-              <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(selectedPhenos.length, 3)}, 1fr)`, gap: 16 }}>
+              <div className={`dualr-drug-grid-${Math.min(selectedPhenos.length, 3)}`}>
                 {selectedPhenos.map(pid => {
                   const p = PHENOTYPES[pid];
                   const r = results[pid];
@@ -795,7 +887,7 @@ export default function App() {
             </div>
 
             {/* New assessment button */}
-            <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
+            <div className="dualr-btn-row" style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
               <button onClick={goHome} style={{
                 padding: "11px 26px", background: C.bgDark, color: "#fff", border: "none",
                 borderRadius: 7, fontSize: 14, fontWeight: 600, cursor: "pointer",
