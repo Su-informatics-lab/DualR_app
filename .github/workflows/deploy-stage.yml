@@ -1,0 +1,16 @@
+name: deploy-stage
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, dualr-stage]
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy containers
+        run: docker compose -f deploy/docker-compose.stage.yml up -d --build
+      - name: frontend health check
+        run: curl -fsS http://localhost/health
+      - name: backend health check
+        run: curl -fsS http://localhost:8000/health
