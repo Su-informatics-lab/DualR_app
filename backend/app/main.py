@@ -185,11 +185,13 @@ def _write_cache(drug: str, disease: str, mode: str, probability: float):
         raise
 
 
-async def query_catchat(drug_name: str, disease: str, use_cot: bool) -> float:
+async def query_catchat(drug_name: str, disease: str, use_cot: bool) -> float | None:
     """
     Query MSU CatChat for P(disease|drug) for a drug absent from the lookup tables.
     Reads CATCHAT_BASE_URL, CATCHAT_MODEL, CATCHAT_API_KEY from environment.
-    Raises RuntimeError if CatChat is unconfigured, the request fails, or no probability is parsed.
+    Raises RuntimeError if CatChat is unconfigured (hard infrastructure failure).
+    Returns None if the request fails or response contains no parseable probability;
+    the drug is then skipped (contributes 0 to the DualR score), matching dualr_post.py dropna.
     """
     if not CATCHAT_BASE_URL or not CATCHAT_MODEL:
         raise RuntimeError(
@@ -238,16 +240,14 @@ async def query_catchat(drug_name: str, disease: str, use_cot: bool) -> float:
             numbers = re.findall(r"0\.\d+", text)
             if numbers:
                 return float(numbers[-1])
-            raise RuntimeError(
-                f"CatChat response for {drug_name} contained no parseable probability. "
-                f"Raw response: {text[:200]}"
+            logger.warning(
+                f"CatChat returned no parseable probability for drug={drug_name}, "
+                f"disease={disease}; skipping. Raw: {text[:200]}"
             )
-    except RuntimeError:
-        raise
+            return None
     except Exception as e:
-        raise RuntimeError(
-            f"CatChat query failed for drug={drug_name}, disease={disease}: {e}"
-        ) from e
+        logger.error(f"CatChat query failed for drug={drug_name}, disease={disease}: {e}")
+        return None
 
 
 # ═══════════════════════════════════════════
@@ -303,25 +303,34 @@ async def predict(req: PredictRequest):
         race_val = RACE_MAP.get(req.demographics.get("race", "White"), 0)
         eth_val = ETHNICITY_MAP.get(req.demographics.get("ethnicity", "Others"), 0)
 
-        # 2. Novel drugs: query CatChat and add to drug_probs before scoring
+        # 2. Novel drugs: query CatChat and add to drug_probs before scoring.
+        #    Drugs where CatChat returns no parseable probability are skipped
+        #    (they contribute 0 to the DualR score, matching dualr_post.py dropna behavior).
         known = drug_probs.get(disease, {})
         novel_drugs = [d for d in req.drugs if d.strip() not in known]
+        skipped_drugs: list[str] = []
         if novel_drugs:
             logger.info(f"Novel drugs for {disease}: {len(novel_drugs)}")
             for drug in novel_drugs[:10]:  # cap at 10 per request
                 drug_clean = drug.strip()
-                for use_cot, mode in [(False, "nocot"), (True, "cot")]:
-                    try:
+                scored = False
+                try:
+                    for use_cot, mode in [(False, "nocot"), (True, "cot")]:
                         p = await query_catchat(drug_clean, disease, use_cot)
-                    except RuntimeError as e:
-                        raise HTTPException(
-                            502,
-                            f"Novel drug scoring failed for '{drug_clean}': {e}"
-                        )
-                    if drug_clean not in drug_probs[disease]:
-                        drug_probs[disease][drug_clean] = {}
-                    drug_probs[disease][drug_clean][mode] = p
-                    _write_cache(drug_clean, disease, mode, p)
+                        if p is not None:
+                            if drug_clean not in drug_probs[disease]:
+                                drug_probs[disease][drug_clean] = {}
+                            drug_probs[disease][drug_clean][mode] = p
+                            _write_cache(drug_clean, disease, mode, p)
+                            scored = True
+                except RuntimeError as e:
+                    raise HTTPException(
+                        502,
+                        f"Novel drug scoring failed for '{drug_clean}': {e}"
+                    )
+                if not scored:
+                    skipped_drugs.append(drug_clean)
+                    logger.info(f"Skipped novel drug (no probability): {drug_clean}")
 
         # 3. Compute DualR scores (all drugs now in table after fallback above)
         dualr_nocot = compute_dualr_score(req.drugs, disease, "nocot", prevalence)
@@ -366,17 +375,24 @@ async def predict(req: PredictRequest):
                 "contribution_cot": round(contrib_cot, 3),
                 "contribution_combined": round((contrib_nocot + contrib_cot) / 2, 3),
                 "is_novel": drug_clean not in known,
+                "is_skipped": drug_clean in skipped_drugs,
             })
 
-        top_drugs.sort(key=lambda d: abs(d["contribution_combined"]), reverse=True)
+        # Top 8 scored drugs by |contribution|, then all skipped drugs appended after
+        scored = [d for d in top_drugs if not d["is_skipped"]]
+        skipped_list = [d for d in top_drugs if d["is_skipped"]]
+        scored.sort(key=lambda d: abs(d["contribution_combined"]), reverse=True)
+        display_drugs = scored[:8] + skipped_list
 
         results[disease] = {
             "risk": round(risk, 4),
             "dualr_nocot": round(dualr_nocot, 3),
             "dualr_cot": round(dualr_cot, 3),
-            "top_drugs": top_drugs[:8],
+            "top_drugs": display_drugs,
             "n_novel_drugs": len(novel_drugs),
             "n_known_drugs": len(req.drugs) - len(novel_drugs),
+            "n_skipped_drugs": len(skipped_drugs),
+            "skipped_drugs": skipped_drugs,
         }
 
     return PredictResponse(results=results)

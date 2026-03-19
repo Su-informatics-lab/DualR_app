@@ -315,6 +315,7 @@ export default function App() {
           topDrugs: r.top_drugs.map(d => ({
             shortName: d.short_name,
             contribution: d.contribution_combined,
+            isSkipped: d.is_skipped,
           })),
         };
       }
@@ -722,7 +723,7 @@ export default function App() {
 
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <button onClick={() => setStep(2)} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
-                <button disabled={!drugs.length} onClick={() => setStep(4)} style={{
+                <button disabled={!drugs.length} onClick={() => { setError(null); setResults(null); setStep(4); }} style={{
                   padding: "11px 26px", background: drugs.length ? C.bgDark : C.border,
                   color: drugs.length ? "#fff" : C.textMuted, border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600,
                   cursor: drugs.length ? "pointer" : "not-allowed",
@@ -759,7 +760,7 @@ export default function App() {
                 </div>
               )}
               <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={() => setStep(3)} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
+                <button onClick={() => { setError(null); setStep(3); }} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
                 <button onClick={fetchResults} disabled={loading} style={{
                   padding: "13px 30px", background: loading ? C.border : `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`,
                   color: loading ? C.textMuted : "#fff", border: "none", borderRadius: 8, fontSize: 15, fontWeight: 600,
@@ -848,13 +849,13 @@ export default function App() {
                       {r.topDrugs.map((d, i) => {
                         const val = parseFloat(d.contribution);
                         const maxBar = 3;
-                        const barW = Math.min(Math.abs(val) / maxBar, 1) * 100;
+                        const barW = d.isSkipped ? 0 : Math.min(Math.abs(val) / maxBar, 1) * 100;
                         return (
                           <div key={i} style={{ marginBottom: 6 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>
-                              <span style={{ fontFamily: ff.mono, color: C.text }}>{d.shortName}</span>
-                              <span style={{ fontFamily: ff.mono, fontWeight: 600, color: val > 0 ? C.crimson : C.success }}>
-                                {val > 0 ? "+" : ""}{d.contribution}
+                              <span style={{ fontFamily: ff.mono, color: d.isSkipped ? C.textMuted : C.text }}>{d.shortName}</span>
+                              <span style={{ fontFamily: ff.mono, fontWeight: 600, color: d.isSkipped ? C.textMuted : (val > 0 ? C.crimson : C.success) }}>
+                                {d.isSkipped ? "N/A" : `${val > 0 ? "+" : ""}${d.contribution}`}
                               </span>
                             </div>
                             <div style={{ height: 3, background: "#F0F0EE", borderRadius: 2, overflow: "hidden" }}>
