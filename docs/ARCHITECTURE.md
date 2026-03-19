@@ -8,7 +8,9 @@ Single EC2 instance (`us-east-2`, stage account) running two Docker containers:
 Browser
   └─> nginx (port 80) — React SPA
         └─> FastAPI (port 8000) — /api/predict
-              └─> XGBoost models + drug probability tables (local files)
+              ├─> joblib bundles (XGBoost pipeline, feature names)
+              ├─> drug probability parquets (P(disease|drug))
+              └─> MSU CatChat (optional, novel drugs only)
 ```
 
 - The frontend serves a static React/Vite build via nginx.
@@ -21,16 +23,16 @@ GitHub repo `DualR_app` is the single source of truth. Deployment is driven by G
 
 ## Backend
 
-- **Framework:** FastAPI + uvicorn
-- **Inference:** XGBoost models (`xgb_t2d.json`, `xgb_htn.json`, `xgb_aud.json`) loaded at startup from `backend/models/`
-- **Drug signal:** Pre-computed probability tables (`drug_probs_{disease}_{mode}.parquet`) encode P(disease|drug) from All of Us and INPC cohorts
-- **Novel drugs:** Optionally queried via a vLLM endpoint (`VLLM_BASE_URL`); falls back to prevalence if unavailable
+- **Framework:** FastAPI + uvicorn (Python 3.12)
+- **Inference:** Frozen AoU joblib bundles (`deploy_{disease}.joblib`) loaded at startup from `backend/models/`. Each bundle contains a sklearn Pipeline (with XGBoost) and `feature_names`.
+- **Drug signal:** Pre-computed probability tables (`drug_probs_{disease}_{mode}.parquet`) encode P(disease|drug) for nocot and cot scoring modes. Six files total (t2d/htn/aud × nocot/cot).
+- **Novel drugs:** Drugs absent from the lookup tables are queried via MSU CatChat (`CATCHAT_BASE_URL`). Results are cached in `CACHE_DIR` (JSONL) and reloaded at next startup. Falls back to disease prevalence if CatChat is unconfigured or fails.
 - **Three phenotypes:** T2D, Hypertension, AUD
 
 ## Frontend
 
 - **Stack:** React 18 + Vite, served as a static build via nginx
-- **State:** Current scoring is simulated client-side (placeholder). The backend contract (`POST /api/predict`) is already defined — wire up when models are deployed to EC2.
+- **API:** Calls `POST /api/predict` (proxied by nginx to the backend container). No mock scoring.
 - **Privacy:** No cookies, no analytics, no local storage. Session state only.
 
 ## File Layout
@@ -41,13 +43,13 @@ DualR_app/
 ├── frontend/            React app, nginx config, Dockerfile
 ├── backend/             FastAPI app, Dockerfile, requirements
 │   ├── app/main.py      Prediction endpoint
-│   └── models/          XGBoost + parquet files (not in git — transfer separately)
+│   └── models/          joblib bundles + parquet files (not in git — transfer separately)
 ├── deploy/              docker-compose.stage.yml, env.stage.example
 └── docs/                This file, DEPLOYMENT.md
 ```
 
 ## Out of Scope (for now)
 
-- LLM-backed scoring path (vLLM endpoint is wired but not required for stage)
 - Multiple environments beyond stage
 - CDN, load balancer, container orchestration
+- Automated deploys on push (all deploys are manual workflow_dispatch)
