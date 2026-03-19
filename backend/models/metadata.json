@@ -1,0 +1,25 @@
+{
+  "source": "aou",
+  "scope": "preindex180",
+  "age_mode": "numeric",
+  "cohort_n": 254487,
+  "prevalence": {
+    "t2d": 0.10897145995186794,
+    "htn": 0.33047267640390277,
+    "aud": 0.07755602447276286
+  },
+  "dualr_agg": "sum",
+  "dualr_impute": "auto",
+  "model_key": "llama-3.1-8b-instruct-temp-0p01",
+  "artifacts": [
+    "deploy_t2d.joblib",
+    "deploy_htn.joblib",
+    "deploy_aud.joblib",
+    "drug_probs_t2d_nocot.parquet",
+    "drug_probs_t2d_cot.parquet",
+    "drug_probs_htn_nocot.parquet",
+    "drug_probs_htn_cot.parquet",
+    "drug_probs_aud_nocot.parquet",
+    "drug_probs_aud_cot.parquet"
+  ]
+}
