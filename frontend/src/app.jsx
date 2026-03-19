@@ -108,17 +108,6 @@ const SAMPLE_DRUGS = [
   "gabapentin 300 MG Oral Capsule",
 ];
 
-// ── Responsive width hook ──
-function useIsMobile() {
-  const [mobile, setMobile] = useState(typeof window !== "undefined" && window.innerWidth < 641);
-  useEffect(() => {
-    const fn = () => setMobile(window.innerWidth < 641);
-    window.addEventListener("resize", fn);
-    return () => window.removeEventListener("resize", fn);
-  }, []);
-  return mobile;
-}
-
 // ── Risk Gauge ──
 function RiskGauge({ value, size = 150 }) {
   const pct = Math.round(value * 100);
@@ -789,8 +778,6 @@ export default function App() {
   //  RESULTS
   // ═══════════════════════════════════
   if (view === "results" && results) {
-    const isMobile = useIsMobile(); // eslint-disable-line react-hooks/rules-of-hooks
-    const gaugeSize = isMobile ? 110 : 150;
     return (
       <div style={base}>
         <link href={fontLink} rel="stylesheet" />
@@ -822,7 +809,7 @@ export default function App() {
                   }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 2 }}>{p.icon} {p.name}</div>
                     <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 14 }}>Population prev: {p.prevalence}</div>
-                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><RiskGauge value={r.risk} size={gaugeSize} /></div>
+                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><RiskGauge value={r.risk} /></div>
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
                       <div style={{ padding: "7px 0", background: "#F8F9FA", borderRadius: 5 }}>
                         <div style={{ fontSize: 9, color: C.textMuted }}>DualR<sub style={{ fontSize: 8 }}>fast</sub></div>
