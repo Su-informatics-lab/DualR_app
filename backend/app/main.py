@@ -230,6 +230,7 @@ async def query_catchat(drug_name: str, disease: str, use_cot: bool) -> float:
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 512 if use_cot else 16,
                     "temperature": 0.01,
+                    **( {"reasoning_effort": "medium"} if "oss" in CATCHAT_MODEL.lower() else {} ),
                 },
             )
             resp.raise_for_status()
