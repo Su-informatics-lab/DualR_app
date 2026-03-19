@@ -355,6 +355,33 @@ async def predict(req: PredictRequest):
         row = pd.DataFrame([{k: feature_dict.get(k, 0) for k in feature_names}])
         risk = float(bundle["pipeline"].predict_proba(row)[0][1])
 
+        # 5a. Component contributions (marginal effects vs. all-zero baseline)
+        pipe = bundle["pipeline"]
+        dualr_cols = {"dualr_no_cot", "dualr_nocot", "dualr_cot"}
+        demo_cols   = {"age", "gender", "race", "ethnicity"}
+
+        neutral_row   = pd.DataFrame([{k: 0 for k in feature_names}])
+        baseline_risk = float(pipe.predict_proba(neutral_row)[0][1])
+
+        drug_only_row = neutral_row.copy()
+        for col in feature_names:
+            if col in dualr_cols:
+                drug_only_row[col] = row[col].values[0]
+        drug_risk = float(pipe.predict_proba(drug_only_row)[0][1])
+
+        demo_only_row = neutral_row.copy()
+        for col in feature_names:
+            if col in demo_cols:
+                demo_only_row[col] = row[col].values[0]
+        demo_risk = float(pipe.predict_proba(demo_only_row)[0][1])
+
+        components = {
+            "baseline":    round(baseline_risk, 4),
+            "drug_effect": round(drug_risk - baseline_risk, 4),
+            "demo_effect": round(demo_risk - baseline_risk, 4),
+            "como_effect": round(risk - drug_risk - demo_risk + baseline_risk, 4),
+        }
+
         # 6. Per-drug contributions for the results display
         top_drugs = []
         for drug in req.drugs:
@@ -389,6 +416,7 @@ async def predict(req: PredictRequest):
             "dualr_nocot": round(dualr_nocot, 3),
             "dualr_cot": round(dualr_cot, 3),
             "top_drugs": display_drugs,
+            "components": components,
             "n_novel_drugs": len(novel_drugs),
             "n_known_drugs": len(req.drugs) - len(novel_drugs),
             "n_skipped_drugs": len(skipped_drugs),

@@ -312,6 +312,8 @@ export default function App() {
           dualr_nocot: r.dualr_nocot,
           dualr_cot: r.dualr_cot,
           auc: PHENOTYPES[pid].auc,
+          components: r.components || null,
+          n_skipped_drugs: r.n_skipped_drugs || 0,
           topDrugs: r.top_drugs.map(d => ({
             shortName: d.short_name,
             contribution: d.contribution_combined,
@@ -778,7 +780,138 @@ export default function App() {
   // ═══════════════════════════════════
   //  RESULTS
   // ═══════════════════════════════════
+
+  // ── Waterfall chart for per-drug contributions ──
+  function DrugWaterfall({ drugs: drugList, accentColor }) {
+    const scored = drugList.filter(d => !d.isSkipped);
+    const skipped = drugList.filter(d => d.isSkipped);
+    const maxAbs = scored.reduce((m, d) => Math.max(m, Math.abs(d.contribution)), 0.01);
+    const labelW = 130;
+    const valueW = 46;
+    const barAreaW = 520; // logical units; SVG is viewBox-scaled
+    const rowH = 28;
+    const gap = 4;
+    const totalRows = scored.length + (skipped.length > 0 ? skipped.length + 1 : 0);
+    const svgH = totalRows * (rowH + gap);
+    const centerX = labelW + barAreaW / 2;
+    const scale = (v) => (Math.abs(v) / maxAbs) * (barAreaW / 2) * 0.82;
+
+    return (
+      <div style={{ width: "100%", overflowX: "auto" }}>
+        <svg viewBox={`0 0 ${labelW + barAreaW + valueW} ${svgH}`} width="100%" style={{ display: "block", minWidth: 320 }}>
+          {/* Center baseline */}
+          <line x1={centerX} y1={0} x2={centerX} y2={svgH} stroke="#E5E4E1" strokeWidth="1" />
+
+          {scored.map((d, i) => {
+            const val = d.contribution;
+            const bw = scale(val);
+            const isPos = val >= 0;
+            const barX = isPos ? centerX : centerX - bw;
+            const y = i * (rowH + gap);
+            const color = isPos ? "#8B1A1A" : "#0A7E8C";
+            const fillColor = isPos ? "rgba(139,26,26,0.12)" : "rgba(10,126,140,0.12)";
+            return (
+              <g key={i}>
+                {/* Drug name */}
+                <text x={labelW - 8} y={y + rowH / 2 + 4} textAnchor="end"
+                  fontSize="11" fontFamily="'JetBrains Mono', monospace" fill="#1A1D21">
+                  {d.shortName.length > 16 ? d.shortName.slice(0, 15) + "…" : d.shortName}
+                </text>
+                {/* Bar */}
+                <rect x={barX} y={y + 4} width={bw} height={rowH - 8}
+                  fill={fillColor} stroke={color} strokeWidth="1.2" rx="2" />
+                {/* Value label */}
+                <text x={isPos ? centerX + bw + 5 : centerX - bw - 5}
+                  y={y + rowH / 2 + 4} textAnchor={isPos ? "start" : "end"}
+                  fontSize="10" fontFamily="'JetBrains Mono', monospace"
+                  fontWeight="600" fill={color}>
+                  {val > 0 ? "+" : ""}{val.toFixed(2)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Skipped drugs */}
+          {skipped.length > 0 && (() => {
+            const sepY = scored.length * (rowH + gap);
+            return (
+              <g>
+                <line x1={labelW} y1={sepY + 2} x2={labelW + barAreaW} y2={sepY + 2} stroke="#E5E4E1" strokeWidth="1" strokeDasharray="4 3" />
+                {skipped.map((d, i) => {
+                  const y = sepY + gap + i * (rowH + gap);
+                  return (
+                    <g key={i}>
+                      <text x={labelW - 8} y={y + rowH / 2 + 4} textAnchor="end"
+                        fontSize="11" fontFamily="'JetBrains Mono', monospace" fill="#6C737F">
+                        {d.shortName.length > 16 ? d.shortName.slice(0, 15) + "…" : d.shortName}
+                      </text>
+                      <text x={centerX} y={y + rowH / 2 + 4} textAnchor="middle"
+                        fontSize="10" fontFamily="'Source Sans 3', sans-serif" fill="#6C737F" fontStyle="italic">
+                        not recognized
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })()}
+        </svg>
+      </div>
+    );
+  }
+
+  // ── Compact horizontal score bar ──
+  function ScoreBar({ label, value, maxAbs }) {
+    const pct = Math.min(Math.abs(value) / Math.max(maxAbs, 0.01), 1) * 50; // % of half
+    const isPos = value >= 0;
+    const color = isPos ? "#8B1A1A" : "#0A7E8C";
+    return (
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
+          <span style={{ color: "#6C737F" }}>{label}</span>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, color }}>{value > 0 ? "+" : ""}{value.toFixed(3)}</span>
+        </div>
+        <div style={{ position: "relative", height: 6, background: "#F0F0EE", borderRadius: 3, overflow: "visible" }}>
+          <div style={{ position: "absolute", left: "50%", top: 0, width: 1, height: 6, background: "#C0BFBC" }} />
+          <div style={{
+            position: "absolute",
+            left: isPos ? "50%" : `${50 - pct}%`,
+            width: `${pct}%`,
+            height: "100%",
+            background: color,
+            borderRadius: 3,
+            transition: "width 0.8s ease-out",
+          }} />
+        </div>
+      </div>
+    );
+  }
+
+  // ── Final risk probability bar ──
+  function RiskBar({ value }) {
+    const pct = Math.round(value * 100);
+    const riskColor = pct < 20 ? "#0D7C5F" : pct < 40 ? "#B45309" : pct < 65 ? "#D97706" : "#8B1A1A";
+    const label = pct < 20 ? "Low" : pct < 40 ? "Moderate" : pct < 65 ? "Elevated" : "High";
+    return (
+      <div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }}>
+          <span style={{ color: "#6C737F" }}>Combined risk probability</span>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: riskColor }}>{pct}% — {label}</span>
+        </div>
+        <div style={{ height: 10, background: "#F0F0EE", borderRadius: 5, overflow: "hidden" }}>
+          <div style={{
+            width: `${pct}%`, height: "100%", borderRadius: 5,
+            background: `linear-gradient(90deg, ${riskColor}88, ${riskColor})`,
+            transition: "width 1s ease-out",
+          }} />
+        </div>
+      </div>
+    );
+  }
+
   if (view === "results" && results) {
+    const phenoCount = selectedPhenos.length;
+
     return (
       <div style={base}>
         <link href={fontLink} rel="stylesheet" />
@@ -788,93 +921,145 @@ export default function App() {
 
         <div className="dualr-page-pad" style={{ maxWidth: 860, margin: "0 auto" }}>
           <div style={{ animation: "fadeIn 0.5s ease-out" }}>
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 12px", background: C.successLight, borderRadius: 16, marginBottom: 16 }}>
-              <div style={{ width: 5, height: 5, borderRadius: "50%", background: C.success }} />
-              <span style={{ fontSize: 11, fontWeight: 600, color: C.success }}>Analysis Complete</span>
-            </div>
 
-            <h2 className="dualr-results-h2" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Risk Assessment</h2>
-            <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 32 }}>
-              Based on {drugs.length} medication{drugs.length !== 1 ? "s" : ""}, {Object.values(comoAnswers).filter(Boolean).length} comorbidities, and demographic covariates.
+            {/* Header */}
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 12px", background: "#ECFDF5", borderRadius: 16, marginBottom: 14 }}>
+              <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#0D7C5F" }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: "#0D7C5F" }}>Analysis Complete</span>
+            </div>
+            <h2 className="dualr-results-h2" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 4 }}>Risk Assessment</h2>
+            <p style={{ color: C.textMuted, fontSize: 13, marginBottom: 28 }}>
+              {drugs.length} medication{drugs.length !== 1 ? "s" : ""} · {Object.values(comoAnswers).filter(Boolean).length} comorbidities · {selectedPhenos.map(pid => PHENOTYPES[pid].abbr).join(", ")}
             </p>
 
-            {/* Risk Cards */}
-            <div className={`dualr-risk-grid dualr-risk-grid-${Math.min(selectedPhenos.length, 3)}`}>
-              {selectedPhenos.map((pid, i) => {
-                const p = PHENOTYPES[pid];
-                const r = results[pid];
-                return (
-                  <div key={pid} style={{
-                    background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 12, padding: 24, textAlign: "center",
-                    animation: `scaleIn 0.4s ease-out ${i * 0.1}s both`,
-                  }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: p.color, marginBottom: 2 }}>{p.icon} {p.name}</div>
-                    <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 14 }}>Population prev: {p.prevalence}</div>
-                    <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}><RiskGauge value={r.risk} /></div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
-                      <div style={{ padding: "7px 0", background: "#F8F9FA", borderRadius: 5 }}>
-                        <div style={{ fontSize: 9, color: C.textMuted }}>DualR<sub style={{ fontSize: 8 }}>fast</sub></div>
-                        <div style={{ fontSize: 15, fontWeight: 700, fontFamily: ff.mono }}>{r.dualr_nocot}</div>
-                      </div>
-                      <div style={{ padding: "7px 0", background: "#F8F9FA", borderRadius: 5 }}>
-                        <div style={{ fontSize: 9, color: C.textMuted }}>DualR<sub style={{ fontSize: 8 }}>slow</sub></div>
-                        <div style={{ fontSize: 15, fontWeight: 700, fontFamily: ff.mono }}>{r.dualr_cot}</div>
-                      </div>
+            {/* One card per phenotype */}
+            {selectedPhenos.map((pid, phenoIdx) => {
+              const p = PHENOTYPES[pid];
+              const r = results[pid];
+              const comp = r.components || {};
+              const drugEffect = comp.drug_effect ?? null;
+              const demoEffect = comp.demo_effect ?? null;
+              const comoEffect = comp.como_effect ?? null;
+              const maxDualR = Math.max(Math.abs(r.dualr_nocot), Math.abs(r.dualr_cot), 0.01);
+
+              // Interpretation line
+              const pct = Math.round(r.risk * 100);
+              const riskWord = pct < 20 ? "Low" : pct < 40 ? "Moderate" : pct < 65 ? "Elevated" : "High";
+              const driverWord = drugEffect !== null
+                ? (Math.abs(drugEffect) > Math.abs(demoEffect ?? 0) + Math.abs(comoEffect ?? 0)
+                    ? "medication profile" : "clinical factors")
+                : "medication profile";
+
+              return (
+                <div key={pid} style={{
+                  background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14,
+                  padding: 24, marginBottom: 24,
+                  animation: `scaleIn 0.4s ease-out ${phenoIdx * 0.08}s both`,
+                }}>
+                  {/* ── Phenotype label ── */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 8, background: `${p.color}18`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{p.icon}</div>
+                    <div>
+                      <div style={{ fontFamily: ff.serif, fontSize: 17, fontWeight: 700 }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: C.textMuted }}>Population prevalence: {p.prevalence}</div>
                     </div>
-                    {/* Model performance context */}
-                    <div style={{ marginTop: 10, padding: "6px 8px", background: C.accentLight, borderRadius: 5 }}>
-                      <div style={{ fontSize: 9, color: C.accentDark, fontWeight: 600 }}>Validated AUC</div>
-                      <div style={{ fontSize: 11, fontFamily: ff.mono, color: C.accentDark }}>
-                        Base {r.auc.base.toFixed(3)} → DualR {r.auc.dualr.toFixed(3)}
+                    <div style={{ marginLeft: "auto", textAlign: "right" }}>
+                      <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 2 }}>Validated AUC</div>
+                      <div style={{ fontFamily: ff.mono, fontSize: 11, color: C.accentDark }}>{r.auc.base.toFixed(3)} → <strong>{r.auc.dualr.toFixed(3)}</strong></div>
+                    </div>
+                  </div>
+
+                  {/* ── A. Risk Summary Row ── */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 24, flexWrap: "wrap" }}>
+                    <RiskGauge value={r.risk} size={120} />
+                    <div style={{ flex: 1, minWidth: 180 }}>
+                      <div style={{ fontFamily: ff.serif, fontSize: 15, fontWeight: 700, marginBottom: 6, lineHeight: 1.4 }}>
+                        {riskWord} risk driven primarily by {driverWord}
+                      </div>
+                      <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>
+                        The model integrates drug associations, demographics, and comorbidities. The drug signal (DualR score) carries the most predictive weight.
                       </div>
                     </div>
                   </div>
-                );
-              })}
-            </div>
 
-            {/* Top Contributing Drugs */}
-            <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: 20, marginBottom: 20 }}>
-              <h4 style={{ fontFamily: ff.serif, fontSize: 16, fontWeight: 700, marginBottom: 14 }}>Medication Contributions</h4>
-              <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 14, lineHeight: 1.6 }}>
-                Each drug's DualR log-odds contribution relative to population prevalence. Positive values indicate higher risk; negative values are protective.
-              </p>
-              <div className={`dualr-drug-grid-${Math.min(selectedPhenos.length, 3)}`}>
-                {selectedPhenos.map(pid => {
-                  const p = PHENOTYPES[pid];
-                  const r = results[pid];
-                  return (
-                    <div key={pid}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: p.color, marginBottom: 8 }}>{p.abbr}</div>
-                      {r.topDrugs.map((d, i) => {
-                        const val = parseFloat(d.contribution);
-                        const maxBar = 3;
-                        const barW = d.isSkipped ? 0 : Math.min(Math.abs(val) / maxBar, 1) * 100;
-                        return (
-                          <div key={i} style={{ marginBottom: 6 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>
-                              <span style={{ fontFamily: ff.mono, color: d.isSkipped ? C.textMuted : C.text }}>{d.shortName}</span>
-                              <span style={{ fontFamily: ff.mono, fontWeight: 600, color: d.isSkipped ? C.textMuted : (val > 0 ? C.crimson : C.success) }}>
-                                {d.isSkipped ? "N/A" : `${val > 0 ? "+" : ""}${d.contribution}`}
-                              </span>
-                            </div>
-                            <div style={{ height: 3, background: "#F0F0EE", borderRadius: 2, overflow: "hidden" }}>
-                              <div style={{
-                                width: `${barW}%`, height: "100%", borderRadius: 2,
-                                background: val > 0 ? C.crimson : C.success,
-                                transition: "width 0.6s ease-out",
-                              }} />
-                            </div>
-                          </div>
-                        );
-                      })}
+                  {/* ── B. Drug Signal Section ── */}
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Drug Signal</span>
+                      <span style={{ fontSize: 11, color: C.textMuted }}>DualR log₂ OR scores relative to prevalence</span>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
 
-            {/* New assessment button */}
+                    {/* Fast / Slow score bars */}
+                    <div style={{ background: "#FAFAF8", border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px", marginBottom: 12 }}>
+                      <ScoreBar label="Fast reasoning (no CoT)" value={r.dualr_nocot} maxAbs={maxDualR} />
+                      <ScoreBar label="Slow reasoning (CoT)" value={r.dualr_cot} maxAbs={maxDualR} />
+                    </div>
+
+                    {/* Waterfall */}
+                    <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "14px 16px", background: C.bgCard }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 10 }}>
+                        Per-drug contributions
+                        <span style={{ fontWeight: 400, color: C.textMuted, marginLeft: 8 }}>
+                          positive = risk-increasing · negative = protective
+                        </span>
+                      </div>
+                      {r.topDrugs.length > 0
+                        ? <DrugWaterfall drugs={r.topDrugs} accentColor={p.color} />
+                        : <div style={{ fontSize: 12, color: C.textMuted, padding: "8px 0" }}>No drug contributions available.</div>
+                      }
+                    </div>
+                  </div>
+
+                  {/* ── C. Clinical Adjustments ── */}
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.textMuted, marginBottom: 8 }}>Clinical Adjustments</div>
+                    <div style={{ background: "#FAFAF8", border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px" }}>
+                      {demoEffect !== null ? (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${C.border}` }}>
+                          <span style={{ color: C.textMuted }}>
+                            Demographic adjustment
+                            <span style={{ marginLeft: 8, color: "#9CA3AF" }}>Age {demo.age} · {demo.gender} · {demo.race} · {demo.ethnicity}</span>
+                          </span>
+                          <span style={{ fontFamily: ff.mono, fontWeight: 600, color: demoEffect > 0 ? "#8B1A1A" : demoEffect < 0 ? "#0A7E8C" : C.textMuted }}>
+                            {demoEffect > 0 ? "+" : ""}{demoEffect.toFixed(4)}
+                          </span>
+                        </div>
+                      ) : null}
+                      {comoEffect !== null ? (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "5px 0", borderBottom: demoEffect !== null ? `1px solid ${C.border}` : "none" }}>
+                          <span style={{ color: C.textMuted }}>
+                            Comorbidity adjustment
+                            <span style={{ marginLeft: 8, color: "#9CA3AF" }}>{Object.values(comoAnswers).filter(Boolean).length} condition{Object.values(comoAnswers).filter(Boolean).length !== 1 ? "s" : ""} present</span>
+                          </span>
+                          <span style={{ fontFamily: ff.mono, fontWeight: 600, color: comoEffect > 0 ? "#8B1A1A" : comoEffect < 0 ? "#0A7E8C" : C.textMuted }}>
+                            {comoEffect > 0 ? "+" : ""}{comoEffect.toFixed(4)}
+                          </span>
+                        </div>
+                      ) : null}
+                      {drugEffect !== null ? (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "5px 0" }}>
+                          <span style={{ color: C.textMuted }}>
+                            Drug signal adjustment
+                            <span style={{ marginLeft: 8, color: "#9CA3AF" }}>{drugs.length - (r.n_skipped_drugs || 0)} drugs scored</span>
+                          </span>
+                          <span style={{ fontFamily: ff.mono, fontWeight: 600, color: drugEffect > 0 ? "#8B1A1A" : drugEffect < 0 ? "#0A7E8C" : C.textMuted }}>
+                            {drugEffect > 0 ? "+" : ""}{drugEffect.toFixed(4)}
+                          </span>
+                        </div>
+                      ) : null}
+                      {demoEffect === null && comoEffect === null && drugEffect === null && (
+                        <div style={{ fontSize: 12, color: C.textMuted }}>Component breakdown not available.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ── D. Final Risk Bar ── */}
+                  <RiskBar value={r.risk} />
+                </div>
+              );
+            })}
+
+            {/* Action buttons */}
             <div className="dualr-btn-row" style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
               <button onClick={goHome} style={{
                 padding: "11px 26px", background: C.bgDark, color: "#fff", border: "none",
