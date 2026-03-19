@@ -1,22 +1,31 @@
 """
 DualR Backend — FastAPI
-Prediction endpoint using exported XGBoost models and DualR lookup tables.
+Prediction endpoint using frozen AoU joblib bundles and DualR drug lookup tables.
 
-Feature schema (must match ml.py exactly):
-- age: numeric integer [18, 120] — passed directly as a continuous feature
+Feature schema (must match training in ml.py exactly):
+- age: numeric integer [18, 120] — continuous feature
 - race, ethnicity, gender: categorical-encoded integers (see maps below)
-- Charlson comorbidities: disease-specific binary subsets
-- dualr_nocot, dualr_cot: continuous scores computed from drug lookup tables
+- Charlson comorbidities: binary, all included; pipeline selects via feature_names
+- dualr_no_cot, dualr_cot: continuous DualR scores from drug lookup parquets
+
+Inference path:
+  1. Load deploy_{disease}.joblib at startup → bundle["pipeline"] + bundle["feature_names"]
+  2. Compute DualR scores from parquet lookup tables
+  3. Drugs absent from lookup tables → query MSU CatChat (backend-only, no secret in frontend)
+  4. Build one-row DataFrame in bundle's feature order → predict_proba
 """
 
-import os
+import json
 import logging
+import os
+import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+import httpx
+import joblib
 import numpy as np
 import pandas as pd
-import xgboost as xgb
-import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -25,10 +34,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════
-# Feature Definitions (from ml.py)
+# Feature Definitions
 # ═══════════════════════════════════════════
-
-DEMO_FEATURES = ["age", "race", "ethnicity", "gender"]
 
 CHARLSON_COMORBIDITIES = [
     "HIV", "AIDS", "Cerebrovascular_Disease", "Congestive_Heart_Failure",
@@ -40,15 +47,6 @@ CHARLSON_COMORBIDITIES = [
     "Diabetes_with_Chronic_Complications", "Diabetes_without_Chronic_Complications",
 ]
 
-DISEASE_FEATURE_MAP = {
-    "t2d": (
-        DEMO_FEATURES,
-        [c for c in CHARLSON_COMORBIDITIES if not c.startswith("Diabetes")],
-    ),
-    "htn": (DEMO_FEATURES, CHARLSON_COMORBIDITIES),
-    "aud": (DEMO_FEATURES, CHARLSON_COMORBIDITIES),
-}
-
 PREVALENCES = {"t2d": 0.109, "htn": 0.330, "aud": 0.078}
 
 # Categorical encoding (matches ml.py reference encoding)
@@ -56,28 +54,61 @@ GENDER_MAP = {"Man": 0, "Woman": 1, "Other": 2}
 RACE_MAP = {"White": 0, "Black": 1, "Others": 2}
 ETHNICITY_MAP = {"Others": 0, "Hispanic": 1}
 
-VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1")
 MODEL_DIR = os.getenv("MODEL_DIR", "models")
+CACHE_DIR = os.getenv("CACHE_DIR", "/tmp/dualr_cache")
+
+# CatChat (MSU) — backend-only fallback for novel drugs
+CATCHAT_BASE_URL = os.getenv("CATCHAT_BASE_URL", "")
+CATCHAT_MODEL = os.getenv("CATCHAT_MODEL", "")
+CATCHAT_API_KEY = os.getenv("CATCHAT_API_KEY", "")
 
 # ═══════════════════════════════════════════
-# Global State (loaded at startup)
+# Global State
 # ═══════════════════════════════════════════
 
-models: dict = {}       # disease -> xgb.Booster
+bundles: dict = {}      # disease -> {"pipeline": ..., "feature_names": [...]}
 drug_probs: dict = {}   # disease -> {drug_name -> {"nocot": p, "cot": p}}
 
 
-def load_models():
-    """Load XGBoost models and drug probability tables at startup."""
+def _load_runtime_cache():
+    """Merge previously cached novel drug probabilities into drug_probs."""
+    cache_path = Path(CACHE_DIR)
+    if not cache_path.exists():
+        return
     for disease in ["t2d", "htn", "aud"]:
-        model_path = os.path.join(MODEL_DIR, f"xgb_{disease}.json")
-        if os.path.exists(model_path):
-            bst = xgb.Booster()
-            bst.load_model(model_path)
-            models[disease] = bst
-            logger.info(f"Loaded XGBoost model: {model_path}")
+        for mode in ["nocot", "cot"]:
+            fpath = cache_path / f"{disease}_{mode}.jsonl"
+            if not fpath.exists():
+                continue
+            count = 0
+            with open(fpath) as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                        drug = entry["drug"]
+                        p = float(entry["probability"])
+                        if drug not in drug_probs[disease]:
+                            drug_probs[disease][drug] = {}
+                        if mode not in drug_probs[disease][drug]:
+                            drug_probs[disease][drug][mode] = p
+                            count += 1
+                    except (KeyError, ValueError, json.JSONDecodeError):
+                        continue
+            if count:
+                logger.info(f"Loaded {count} cached novel drug probs from {fpath}")
+
+
+def load_models():
+    """Load joblib bundles and drug probability lookup tables at startup."""
+    for disease in ["t2d", "htn", "aud"]:
+        bundle_path = os.path.join(MODEL_DIR, f"deploy_{disease}.joblib")
+        if os.path.exists(bundle_path):
+            bundle = joblib.load(bundle_path)
+            bundles[disease] = bundle
+            feat_count = len(bundle.get("features", []))
+            logger.info(f"Loaded bundle: {bundle_path} ({feat_count} features)")
         else:
-            logger.warning(f"Model not found: {model_path}")
+            logger.warning(f"Bundle not found: {bundle_path}")
 
         drug_probs[disease] = {}
         for mode in ["nocot", "cot"]:
@@ -93,6 +124,8 @@ def load_models():
                 logger.info(f"Loaded {len(df)} drug probs: {prob_path}")
             else:
                 logger.warning(f"Drug probs not found: {prob_path}")
+
+    _load_runtime_cache()
 
 
 @asynccontextmanager
@@ -120,51 +153,74 @@ def compute_dualr_score(
     baseline_prob: float,
 ) -> float:
     """
-    Compute patient-level DualR score from drug list.
-    Matches dualr_post.py: sum of log2 odds ratios relative to prevalence.
+    Sum of log2 odds ratios for known drugs relative to disease prevalence.
+    Matches dualr_post.py aggregation.
     """
-    log_odds = []
     probs_table = drug_probs.get(disease, {})
-
+    log_odds = []
     for drug in drug_names:
-        drug_clean = drug.strip()
-        if drug_clean in probs_table and mode in probs_table[drug_clean]:
-            p = probs_table[drug_clean][mode]
-            p = max(1e-10, min(1 - 1e-10, p))
+        entry = probs_table.get(drug.strip(), {})
+        if mode in entry:
+            p = max(1e-10, min(1 - 1e-10, entry[mode]))
             drug_odds = p / (1 - p)
             base_odds = baseline_prob / (1 - baseline_prob)
-            or_val = drug_odds / base_odds
-            or_val = max(1e-10, or_val)
+            or_val = max(1e-10, drug_odds / base_odds)
             log_odds.append(np.log2(or_val))
-
-    if not log_odds:
-        return 0.0
-    return sum(log_odds)
+    return sum(log_odds) if log_odds else 0.0
 
 
-async def query_novel_drug_prob(drug_name: str, disease: str, use_cot: bool) -> float:
-    """Query vLLM for P(disease|drug) for an unseen drug."""
-    disease_names = {"t2d": "type 2 diabetes", "htn": "hypertension", "aud": "alcohol use disorder"}
+def _write_cache(drug: str, disease: str, mode: str, probability: float):
+    """Append a novel drug probability to the runtime cache (best-effort)."""
+    try:
+        cache_path = Path(CACHE_DIR)
+        cache_path.mkdir(parents=True, exist_ok=True)
+        fpath = cache_path / f"{disease}_{mode}.jsonl"
+        with open(fpath, "a") as f:
+            f.write(json.dumps({"drug": drug, "probability": probability}) + "\n")
+    except Exception as e:
+        logger.warning(f"Could not write runtime cache: {e}")
+
+
+async def query_catchat(drug_name: str, disease: str, use_cot: bool) -> float:
+    """
+    Query MSU CatChat for P(disease|drug) for a drug absent from the lookup tables.
+    Reads CATCHAT_BASE_URL, CATCHAT_MODEL, CATCHAT_API_KEY from environment.
+    Returns disease prevalence as fallback if CatChat is unconfigured or fails.
+    """
+    if not CATCHAT_BASE_URL or not CATCHAT_MODEL:
+        logger.warning(f"CatChat not configured; using prevalence for novel drug: {drug_name}")
+        return PREVALENCES.get(disease, 0.1)
+
+    disease_names = {
+        "t2d": "type 2 diabetes",
+        "htn": "hypertension",
+        "aud": "alcohol use disorder",
+    }
     disease_full = disease_names.get(disease, disease)
 
     if use_cot:
         prompt = (
-            f"Given that a patient took {drug_name}, estimate the probability that "
-            f"they have {disease_full}. Think step by step, then provide your final "
-            f"answer as a decimal between 0 and 1."
+            f"Given that a patient was prescribed {drug_name}, estimate the probability "
+            f"that they have {disease_full}. Think step by step, then give your final "
+            f"answer as a single decimal number between 0 and 1."
         )
     else:
         prompt = (
-            f"Given that a patient took {drug_name}, estimate the probability that "
-            f"they have {disease_full}. Respond with only a decimal number between 0 and 1."
+            f"Given that a patient was prescribed {drug_name}, estimate the probability "
+            f"that they have {disease_full}. Respond with only a decimal number between 0 and 1."
         )
+
+    headers = {"Content-Type": "application/json"}
+    if CATCHAT_API_KEY:
+        headers["Authorization"] = f"Bearer {CATCHAT_API_KEY}"
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
-                f"{VLLM_BASE_URL}/chat/completions",
+                f"{CATCHAT_BASE_URL}/chat/completions",
+                headers=headers,
                 json={
-                    "model": "openai/gpt-oss-20b",
+                    "model": CATCHAT_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 512 if use_cot else 16,
                     "temperature": 0.01,
@@ -172,13 +228,13 @@ async def query_novel_drug_prob(drug_name: str, disease: str, use_cot: bool) -> 
             )
             resp.raise_for_status()
             text = resp.json()["choices"][0]["message"]["content"]
-            import re
             numbers = re.findall(r"0\.\d+", text)
             if numbers:
                 return float(numbers[-1])
+            logger.warning(f"CatChat returned no probability for {drug_name}; using prevalence")
             return PREVALENCES.get(disease, 0.1)
     except Exception as e:
-        logger.error(f"vLLM query failed for {drug_name}: {e}")
+        logger.error(f"CatChat query failed for {drug_name}: {e}")
         return PREVALENCES.get(disease, 0.1)
 
 
@@ -202,12 +258,12 @@ class PredictResponse(BaseModel):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "models_loaded": list(models.keys())}
+    return {"status": "ok", "models_loaded": list(bundles.keys())}
 
 
 @app.get("/api/health")
 async def api_health():
-    return {"status": "ok", "models_loaded": list(models.keys())}
+    return {"status": "ok", "models_loaded": list(bundles.keys())}
 
 
 @app.post("/api/predict", response_model=PredictResponse)
@@ -215,13 +271,16 @@ async def predict(req: PredictRequest):
     results = {}
 
     for disease in req.diseases:
-        if disease not in DISEASE_FEATURE_MAP:
+        if disease not in PREVALENCES:
             raise HTTPException(400, f"Unknown disease: {disease}")
+        if disease not in bundles:
+            raise HTTPException(503, f"Model not loaded for disease: {disease}")
 
-        demo_feats, como_feats = DISEASE_FEATURE_MAP[disease]
         prevalence = PREVALENCES[disease]
+        bundle = bundles[disease]
+        feature_names = bundle.get("features", [])
 
-        # 1. Encode demographics
+        # 1. Validate and encode demographics
         try:
             age_val = int(req.demographics.get("age"))
         except (TypeError, ValueError):
@@ -232,82 +291,69 @@ async def predict(req: PredictRequest):
         race_val = RACE_MAP.get(req.demographics.get("race", "White"), 0)
         eth_val = ETHNICITY_MAP.get(req.demographics.get("ethnicity", "Others"), 0)
 
-        demo_vector = []
-        for f in demo_feats:
-            if f == "age":
-                demo_vector.append(age_val)
-            elif f == "gender":
-                demo_vector.append(gender_val)
-            elif f == "race":
-                demo_vector.append(race_val)
-            elif f == "ethnicity":
-                demo_vector.append(eth_val)
+        # 2. Novel drugs: query CatChat and add to drug_probs before scoring
+        known = drug_probs.get(disease, {})
+        novel_drugs = [d for d in req.drugs if d.strip() not in known]
+        if novel_drugs:
+            logger.info(f"Novel drugs for {disease}: {len(novel_drugs)}")
+            for drug in novel_drugs[:10]:  # cap at 10 per request
+                drug_clean = drug.strip()
+                for use_cot, mode in [(False, "nocot"), (True, "cot")]:
+                    p = await query_catchat(drug_clean, disease, use_cot)
+                    if drug_clean not in drug_probs[disease]:
+                        drug_probs[disease][drug_clean] = {}
+                    drug_probs[disease][drug_clean][mode] = p
+                    _write_cache(drug_clean, disease, mode, p)
 
-        # 2. Encode comorbidities (binary, disease-specific subset)
-        como_vector = [int(req.comorbidities.get(c, 0)) for c in como_feats]
-
-        # 3. Compute DualR scores
+        # 3. Compute DualR scores (all drugs now in table after fallback above)
         dualr_nocot = compute_dualr_score(req.drugs, disease, "nocot", prevalence)
         dualr_cot = compute_dualr_score(req.drugs, disease, "cot", prevalence)
 
-        # 4. Check for novel drugs and query vLLM if needed
-        known_drugs = drug_probs.get(disease, {})
-        novel_drugs = [d for d in req.drugs if d.strip() not in known_drugs]
-        if novel_drugs:
-            logger.info(f"Querying {len(novel_drugs)} novel drugs via vLLM for {disease}")
-            for drug in novel_drugs[:10]:  # Limit to 10 novel drugs
-                p_nocot = await query_novel_drug_prob(drug, disease, use_cot=False)
-                p_cot = await query_novel_drug_prob(drug, disease, use_cot=True)
-                for p, score_ref in [(p_nocot, "nocot"), (p_cot, "cot")]:
-                    p = max(1e-10, min(1 - 1e-10, p))
-                    drug_odds = p / (1 - p)
-                    base_odds = prevalence / (1 - prevalence)
-                    lo = np.log2(max(1e-10, drug_odds / base_odds))
-                    if score_ref == "nocot":
-                        dualr_nocot += lo
-                    else:
-                        dualr_cot += lo
+        # 4. Build feature dict; bundle's feature_names determines column order.
+        #    Include both naming conventions for the DualR features in case ml.py
+        #    used "dualr_no_cot" or "dualr_nocot" — the bundle will pick the right one.
+        feature_dict: dict = {
+            "age": age_val,
+            "gender": gender_val,
+            "race": race_val,
+            "ethnicity": eth_val,
+            "dualr_no_cot": dualr_nocot,
+            "dualr_nocot": dualr_nocot,
+            "dualr_cot": dualr_cot,
+        }
+        for c in CHARLSON_COMORBIDITIES:
+            feature_dict[c] = int(req.comorbidities.get(c, 0))
 
-        # 5. Assemble feature vector: demo + como + dualr_nocot + dualr_cot
-        feature_vector = demo_vector + como_vector + [dualr_nocot, dualr_cot]
+        # 5. Predict using the pipeline in the bundle
+        row = pd.DataFrame([{k: feature_dict.get(k, 0) for k in feature_names}])
+        risk = float(bundle["pipeline"].predict_proba(row)[0][1])
 
-        # 6. Predict with XGBoost
-        if disease in models:
-            dmatrix = xgb.DMatrix(np.array([feature_vector]))
-            risk = float(models[disease].predict(dmatrix)[0])
-        else:
-            combined = (dualr_nocot + dualr_cot) / 2
-            risk = 1 / (1 + np.exp(-combined * 0.3))
-            logger.warning(f"Using fallback prediction for {disease} (model not loaded)")
-
-        # 7. Per-drug contributions (for interpretability display)
+        # 6. Per-drug contributions for the results display
         top_drugs = []
         for drug in req.drugs:
             drug_clean = drug.strip()
+            entry = drug_probs.get(disease, {}).get(drug_clean, {})
             contrib_nocot = 0.0
             contrib_cot = 0.0
-            if drug_clean in known_drugs:
-                probs = known_drugs[drug_clean]
-                if "nocot" in probs:
-                    p = max(1e-10, min(1 - 1e-10, probs["nocot"]))
-                    contrib_nocot = np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence))))
-                if "cot" in probs:
-                    p = max(1e-10, min(1 - 1e-10, probs["cot"]))
-                    contrib_cot = np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence))))
-
+            if "nocot" in entry:
+                p = max(1e-10, min(1 - 1e-10, entry["nocot"]))
+                contrib_nocot = np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence))))
+            if "cot" in entry:
+                p = max(1e-10, min(1 - 1e-10, entry["cot"]))
+                contrib_cot = np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence))))
             top_drugs.append({
                 "name": drug,
                 "short_name": " ".join(drug.split()[:2]),
                 "contribution_nocot": round(contrib_nocot, 3),
                 "contribution_cot": round(contrib_cot, 3),
                 "contribution_combined": round((contrib_nocot + contrib_cot) / 2, 3),
-                "is_novel": drug_clean not in known_drugs,
+                "is_novel": drug_clean not in known,
             })
 
         top_drugs.sort(key=lambda d: abs(d["contribution_combined"]), reverse=True)
 
         results[disease] = {
-            "risk": round(float(risk), 4),
+            "risk": round(risk, 4),
             "dualr_nocot": round(dualr_nocot, 3),
             "dualr_cot": round(dualr_cot, 3),
             "top_drugs": top_drugs[:8],
