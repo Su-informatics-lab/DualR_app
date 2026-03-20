@@ -5,6 +5,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "80:3000"
+      - "443:3443"
+    volumes:
+      - /etc/ssl/cloudflare:/etc/ssl/cloudflare:ro
     restart: unless-stopped
 
   backend:
