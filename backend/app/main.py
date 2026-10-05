@@ -304,7 +304,8 @@ class Progress:
     def tick(self, drug: str | None = None):
         self.done = min(self.done + 1, self.total)
         if drug in self.drugs:
-            self.drugs[drug][0] += 1
+            d = self.drugs[drug]
+            d[0] = min(d[0] + 1, d[1])
 
     def as_dict(self) -> dict:
         return {
@@ -339,18 +340,19 @@ async def score_novel_drugs(
     async with httpx.AsyncClient(timeout=CATCHAT_TIMEOUT) as client:
         async def run(job):
             disease, drug, use_cot, mode = job
-            async with sem:
-                t0 = time.monotonic()
-                p = await query_catchat(drug, disease, use_cot, client)
-                logger.info(
-                    f"CatChat {mode} {disease} {drug!r}: {time.monotonic() - t0:.1f}s, "
-                    f"{'probability' if p is not None else 'no probability'}"
-                )
-            progress.tick(drug)
-            return job, p
+            try:
+                async with sem:
+                    t0 = time.monotonic()
+                    p = await query_catchat(drug, disease, use_cot, client)
+                    logger.info(
+                        f"CatChat {mode} {disease} {drug!r}: {time.monotonic() - t0:.1f}s, "
+                        f"{'probability' if p is not None else 'no probability'}"
+                    )
+                return job, p
+            finally:
+                progress.tick(drug)  # exactly once per call: answered, failed or cancelled
 
-        task_jobs = {asyncio.create_task(run(job)): job for job in jobs}
-        tasks = list(task_jobs)
+        tasks = [asyncio.create_task(run(job)) for job in jobs]
         try:
             done, pending = await asyncio.wait(tasks, timeout=budget)
         finally:
@@ -361,8 +363,6 @@ async def score_novel_drugs(
             await asyncio.gather(*unfinished, return_exceptions=True)
         if pending:
             logger.warning(f"CatChat budget of {budget:.0f}s exceeded; cancelled {len(pending)} of {len(jobs)} calls")
-            for task in pending:
-                progress.tick(task_jobs[task][1])
 
     scored = set()
     for task in done:
