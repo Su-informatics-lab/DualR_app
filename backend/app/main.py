@@ -62,10 +62,14 @@ CACHE_DIR = os.getenv("CACHE_DIR", "/tmp/dualr_cache")
 CATCHAT_BASE_URL = os.getenv("CATCHAT_BASE_URL", "")
 CATCHAT_MODEL = os.getenv("CATCHAT_MODEL", "")
 CATCHAT_API_KEY = os.getenv("CATCHAT_API_KEY", "")
-# Per-call timeout, total wall-clock budget per request (kept under the 60 s gateway
-# timeout), and how many CatChat calls may run at once.
-CATCHAT_TIMEOUT = float(os.getenv("CATCHAT_TIMEOUT", "20"))
-CATCHAT_BUDGET = float(os.getenv("CATCHAT_BUDGET", "40"))
+# Per-call timeout, total wall-clock budget per request (kept under nginx's 60 s
+# proxy timeout), and how many CatChat calls may run at once. gpt-oss reasons before
+# answering, so a single call can need most of the budget.
+CATCHAT_TIMEOUT = float(os.getenv("CATCHAT_TIMEOUT", "45"))
+CATCHAT_BUDGET = float(os.getenv("CATCHAT_BUDGET", "45"))
+# Matches DEFAULT_MAX_TOKENS in the research code (dualr_oss.py); reasoning tokens
+# count toward this limit, so small values leave the final answer empty.
+CATCHAT_MAX_TOKENS = int(os.getenv("CATCHAT_MAX_TOKENS", "4096"))
 CATCHAT_CONCURRENCY = int(os.getenv("CATCHAT_CONCURRENCY", "12"))
 
 # ═══════════════════════════════════════════
@@ -237,19 +241,21 @@ async def query_catchat(
             json={
                 "model": CATCHAT_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 512 if use_cot else 16,
+                "max_tokens": CATCHAT_MAX_TOKENS,
                 "temperature": 0.01,
                 **( {"reasoning_effort": "medium"} if "oss" in CATCHAT_MODEL.lower() else {} ),
             },
         )
         resp.raise_for_status()
-        text = resp.json()["choices"][0]["message"]["content"]
+        choice = resp.json()["choices"][0]
+        text = (choice.get("message") or {}).get("content") or ""
         numbers = re.findall(r"0\.\d+", text)
         if numbers:
             return float(numbers[-1])
         logger.warning(
             f"CatChat returned no parseable probability for drug={drug_name}, "
-            f"disease={disease}; skipping. Raw: {text[:200]}"
+            f"disease={disease}; skipping. finish_reason={choice.get('finish_reason')}, "
+            f"Raw: {text[:200]}"
         )
         return None
     except Exception as e:
