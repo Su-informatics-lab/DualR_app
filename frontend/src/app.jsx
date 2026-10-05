@@ -709,7 +709,12 @@ export default function App() {
                 <label htmlFor="drug">Add a medication</label>
                 <div className="add-row">
                   <input id="drug" className="input" value={drugInput} onChange={e => setDrugInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") addDrug(drugInput); }}
+                    onKeyDown={e => {
+                      // Enter that confirms an IME composition (e.g. pinyin) must not add the
+                      // entry; Safari reports it as keyCode 229 instead of isComposing.
+                      if (e.key !== "Enter" || e.nativeEvent.isComposing || e.keyCode === 229) return;
+                      addDrug(drugInput);
+                    }}
                     placeholder="Type a medication name, press Enter" />
                   <button className="btn btn-ghost" onClick={() => addDrug(drugInput)}>
                     <Plus size={14} weight="bold" aria-hidden="true" />Add
