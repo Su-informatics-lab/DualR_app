@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { ArrowLeft, ArrowRight, Check, CheckCircle, FileArrowUp, Plus, Warning, WarningCircle, X } from "@phosphor-icons/react";
 
 /*
  * DualR Clinical Risk Assessment Platform
@@ -8,32 +9,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
  * Biostatistics & Health Data Science
  * Indiana University School of Medicine
  *
- * Fonts: Libre Baskerville (SIL OFL), Source Sans 3 (SIL OFL), JetBrains Mono (SIL OFL)
- * All fonts are open-source.
+ * Fonts: Geist and Geist Mono (SIL OFL), self-hosted. Styles and tokens live in src/styles.css.
  */
-
-// ── Color Tokens ──
-const C = {
-  bg: "#F9F8F6",
-  bgCard: "#FFFFFF",
-  bgDark: "#121820",
-  text: "#1A1D21",
-  textMuted: "#6C737F",
-  textLight: "#F8F6F3",
-  accent: "#0A7E8C",
-  accentLight: "#E6F4F6",
-  accentDark: "#066570",
-  crimson: "#8B1A1A",
-  crimsonLight: "#FEF2F2",
-  border: "#E5E4E1",
-  success: "#0D7C5F",
-  successLight: "#ECFDF5",
-  warning: "#B45309",
-  warningLight: "#FFFBEB",
-};
-
-const fontLink = "https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap";
-const ff = { serif: "'Libre Baskerville', 'Georgia', serif", sans: "'Source Sans 3', 'Helvetica Neue', sans-serif", mono: "'JetBrains Mono', monospace" };
 
 // ══════════════════════════════════════════════
 // REAL FEATURE DEFINITIONS (from ml.py)
@@ -71,27 +48,27 @@ const PHENOTYPES = {
   t2d: {
     id: "t2d", name: "Type 2 Diabetes Mellitus", abbr: "T2D",
     desc: "Metabolic disorder characterized by insulin resistance and hyperglycemia",
-    icon: "🩸", color: "#DC2626", prevalence: "10.9%",
+    prevalence: "10.9%",
     auc: { base: 0.766, pdrs: 0.819, dualr: 0.851 },
     n: "247,642",
   },
   htn: {
     id: "htn", name: "Hypertension", abbr: "HTN",
     desc: "Persistent elevation of systemic arterial blood pressure",
-    icon: "❤️", color: "#7C3AED", prevalence: "33.0%",
+    prevalence: "33.0%",
     auc: { base: 0.846, pdrs: 0.875, dualr: 0.886 },
     n: "254,487",
   },
   aud: {
     id: "aud", name: "Alcohol Use Disorder", abbr: "AUD",
     desc: "Impaired control over alcohol use, often underdocumented in clinical records",
-    icon: "🧠", color: "#EA580C", prevalence: "7.8%",
+    prevalence: "7.8%",
     auc: { base: 0.798, pdrs: 0.834, dualr: 0.826 },
     n: "254,487",
   },
 };
 
-// Age is a separate numeric input (integer, 18–120); the three fields below are categorical selects.
+// Age is a separate numeric input (integer, 18-120); the three fields below are categorical selects.
 const DEMO_FIELDS = [
   { id: "gender", label: "Biological Sex", options: ["Man", "Woman", "Other"] },
   { id: "race", label: "Race", options: ["White", "Black", "Others"] },
@@ -108,76 +85,118 @@ const SAMPLE_DRUGS = [
   "gabapentin 300 MG Oral Capsule",
 ];
 
-// ── Risk Gauge ──
-function RiskGauge({ value, size = 150 }) {
+// ── Risk band (thresholds unchanged: <20 Low, <40 Moderate, <65 Elevated, else High) ──
+function riskBand(value) {
   const pct = Math.round(value * 100);
-  const r = (size - 16) / 2;
+  if (pct < 20) return { pct, label: "Low", color: "var(--risk-low)" };
+  if (pct < 40) return { pct, label: "Moderate", color: "var(--risk-moderate)" };
+  if (pct < 65) return { pct, label: "Elevated", color: "var(--risk-elevated)" };
+  return { pct, label: "High", color: "var(--risk-high)" };
+}
+
+const fmtSigned = (v, digits) => `${v > 0 ? "+" : ""}${v.toFixed(digits)}`;
+
+// ── Risk Gauge (270° arc) ──
+function RiskGauge({ value, size = 140 }) {
+  const { pct, label, color } = riskBand(value);
+  const stroke = 8;
+  const r = (size - stroke * 2) / 2;
   const circ = 2 * Math.PI * r;
   const dash = circ * 0.75;
-  const offset = dash - (dash * value);
-  const riskLevel = pct < 20 ? "Low" : pct < 40 ? "Moderate" : pct < 65 ? "Elevated" : "High";
-  const riskColor = pct < 20 ? C.success : pct < 40 ? C.warning : pct < 65 ? "#D97706" : C.crimson;
+  const offset = dash - dash * value;
+  const h = size * 0.86;
+  const arc = { strokeDasharray: `${dash} ${circ}` };
 
   return (
-    <div style={{ position: "relative", width: size, height: size * 0.82 }}>
-      <svg width={size} height={size * 0.82} viewBox={`0 0 ${size} ${size * 0.82}`}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#ECECEA" strokeWidth="10"
-          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
-          transform={`rotate(135 ${size/2} ${size/2})`} />
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={riskColor} strokeWidth="10"
-          strokeDasharray={`${dash} ${circ}`} strokeDashoffset={offset} strokeLinecap="round"
-          transform={`rotate(135 ${size/2} ${size/2})`}
-          style={{ transition: "stroke-dashoffset 1s ease-out, stroke 0.5s" }} />
+    <div className="gauge" style={{ width: size, height: h }} role="img" aria-label={`${pct}% risk, ${label}`}>
+      <svg width={size} height={h} viewBox={`0 0 ${size} ${h}`}>
+        <circle className="gauge-track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke}
+          strokeLinecap="round" transform={`rotate(135 ${size / 2} ${size / 2})`} style={arc} />
+        <circle className="gauge-fill" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke}
+          strokeLinecap="round" transform={`rotate(135 ${size / 2} ${size / 2})`}
+          style={{ ...arc, stroke: color, strokeDashoffset: offset, "--dash": dash, animation: "gauge 1.1s var(--ease) both" }} />
       </svg>
-      <div style={{ position: "absolute", top: "26%", left: 0, right: 0, textAlign: "center" }}>
-        <div style={{ fontSize: size * 0.22, fontWeight: 700, color: riskColor, fontFamily: ff.mono, lineHeight: 1 }}>{pct}%</div>
-        <div style={{ fontSize: size * 0.09, color: C.textMuted, marginTop: 3, fontFamily: ff.sans, fontWeight: 600 }}>{riskLevel}</div>
+      <div className="gauge-center">
+        <div className="gauge-num" style={{ fontSize: size * 0.26 }}>{pct}<small>%</small></div>
+        <div className="gauge-level" style={{ color }}>{label}</div>
       </div>
     </div>
   );
 }
 
-// ── Step Bar ──
+// ── Step progress ──
 function Steps({ steps, current }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 0, marginBottom: 36, flexWrap: "nowrap", overflowX: "auto" }}>
-      {steps.map((s, i) => (
-        <div key={i} style={{ display: "flex", alignItems: "center" }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
-            <div style={{
-              width: 30, height: 30, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 12, fontWeight: 600, fontFamily: ff.sans,
-              background: i <= current ? C.accent : "transparent",
-              color: i <= current ? "#fff" : C.textMuted,
-              border: `2px solid ${i <= current ? C.accent : C.border}`,
-              transition: "all 0.3s",
-              flexShrink: 0,
-            }}>{i < current ? "✓" : i + 1}</div>
-            <span className="dualr-step-label" style={{ fontSize: 11, fontWeight: i === current ? 600 : 400, color: i <= current ? C.accent : C.textMuted, fontFamily: ff.sans, whiteSpace: "nowrap" }}>{s}</span>
-          </div>
-          {i < steps.length - 1 && <div className="dualr-step-connector" style={{ height: 2, background: i < current ? C.accent : C.border, margin: "0 6px", marginBottom: 18, transition: "background 0.3s", flexShrink: 0 }} />}
-        </div>
-      ))}
+    <div className="steps-wrap">
+      <ol className="steps" aria-label="Progress">
+        {steps.map((s, i) => (
+          <li key={s} className={`step ${i < current ? "done" : i === current ? "current" : ""}`}
+            aria-current={i === current ? "step" : undefined}>
+            <div className="step-line" />
+            <div className="step-label"><span className="mono">{i + 1}</span>{s}</div>
+          </li>
+        ))}
+      </ol>
+      <div className="steps-compact">Step {current + 1} of {steps.length}: <strong>{steps[current]}</strong></div>
     </div>
   );
 }
 
 // ── Logo (clickable → home) ──
-function Logo({ onClick, compact }) {
+function Logo({ onClick }) {
   return (
-    <button onClick={onClick} style={{
-      display: "flex", alignItems: "center", gap: compact ? 8 : 10, background: "none", border: "none", cursor: "pointer", padding: 0,
-    }}>
-      <div style={{
-        width: compact ? 28 : 34, height: compact ? 28 : 34, borderRadius: 7,
-        background: `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        color: "#fff", fontWeight: 700, fontSize: compact ? 13 : 15, fontFamily: ff.serif,
-      }}>D</div>
-      <span style={{ fontFamily: ff.serif, fontSize: compact ? 16 : 19, fontWeight: 700, letterSpacing: "-0.01em", color: C.text }}>
-        Dual<span style={{ color: C.accent }}>R</span>
-      </span>
+    <button className="logo" onClick={onClick} aria-label="DualR home">
+      <span className="logo-mark" aria-hidden="true">D</span>
+      <span className="logo-word">Dual<span>R</span></span>
     </button>
+  );
+}
+
+// ── Validated discrimination (real AUROC values from PHENOTYPES) ──
+const AUC_MIN = 0.75;
+const AUC_MAX = 0.9;
+const aucPos = v => `${((v - AUC_MIN) / (AUC_MAX - AUC_MIN)) * 100}%`;
+
+function ValidationChart() {
+  const rows = Object.values(PHENOTYPES);
+  return (
+    <section className="panel evidence rise rise-2" aria-labelledby="evidence-title">
+      <div className="evidence-head">
+        <div>
+          <h2 id="evidence-title" className="evidence-title">Validated discrimination</h2>
+          <div className="evidence-sub">AUROC by condition, All of Us cohort</div>
+        </div>
+        <div className="legend" aria-hidden="true">
+          <span><i className="base" />Baseline</span>
+          <span><i className="dualr" />DualR</span>
+        </div>
+      </div>
+      <div className="dumbbell">
+        {rows.map(p => {
+          const lo = Math.min(p.auc.base, p.auc.dualr);
+          const hi = Math.max(p.auc.base, p.auc.dualr);
+          return (
+            <div className="db-row" key={p.id}>
+              <div className="db-abbr" title={p.name}>{p.abbr}</div>
+              <div className="db-track" role="img"
+                aria-label={`${p.name}: baseline ${p.auc.base.toFixed(3)}, DualR ${p.auc.dualr.toFixed(3)}`}>
+                <div className="db-bar" style={{ left: aucPos(lo), width: `calc(${aucPos(hi)} - ${aucPos(lo)})` }} />
+                <div className="db-dot base" style={{ left: aucPos(p.auc.base) }} title={`Baseline ${p.auc.base.toFixed(3)}`} />
+                <div className="db-dot dualr" style={{ left: aucPos(p.auc.dualr) }} title={`DualR ${p.auc.dualr.toFixed(3)}`} />
+                <span className="db-val" style={{ left: aucPos(p.auc.base) }}>{p.auc.base.toFixed(3)}</span>
+                <span className="db-val dualr" style={{ left: aucPos(p.auc.dualr) }}>{p.auc.dualr.toFixed(3)}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="db-axis" aria-hidden="true">
+        <div />
+        <div className="db-ticks">
+          {[0.75, 0.8, 0.85, 0.9].map(t => <span key={t} style={{ left: aucPos(t) }}>{t.toFixed(2)}</span>)}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -267,7 +286,7 @@ export default function App() {
       setChatMsgs(newMsgs);
       setComoStep(nextIdx);
     } else {
-      newMsgs.push({ agent: true, text: "All set — let's move to your medications." });
+      newMsgs.push({ agent: true, text: "All set. Let's move to your medications." });
       setChatMsgs(newMsgs);
       setTimeout(() => setStep(3), 1000);
     }
@@ -330,106 +349,15 @@ export default function App() {
     }
   }
 
-  const base = { minHeight: "100vh", background: C.bg, fontFamily: ff.sans, color: C.text, overflowX: "hidden" };
-  const globalCSS = `
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-    @keyframes scaleIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    ::selection { background: ${C.accentLight}; color: ${C.accentDark}; }
-    select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236C737F' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
-    input:focus, select:focus { outline: none; border-color: ${C.accent}; box-shadow: 0 0 0 3px rgba(10,126,140,0.08); }
-    button { font-family: ${ff.sans}; }
-
-    /* ── Responsive layout helpers ── */
-    .dualr-page-pad   { padding: 40px 32px 60px; }
-    .dualr-landing-pad{ padding: 80px 40px 60px; }
-    .dualr-nav-pad    { padding: 14px 40px; }
-    .dualr-footer-pad { padding: 20px 40px; }
-
-    .dualr-hero-h1    { font-size: 48px; }
-    .dualr-hero-p     { font-size: 17px; }
-    .dualr-step-h3    { font-size: 26px; }
-    .dualr-results-h2 { font-size: 30px; }
-
-    /* 3-col feature grid on landing */
-    .dualr-feature-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-top: 64px; }
-    /* Risk cards grid */
-    .dualr-risk-grid    { display: grid; gap: 16px; margin-bottom: 28px; }
-    .dualr-risk-grid-1  { grid-template-columns: 1fr; }
-    .dualr-risk-grid-2  { grid-template-columns: 1fr 1fr; }
-    .dualr-risk-grid-3  { grid-template-columns: 1fr 1fr 1fr; }
-    /* Drug contribution grid */
-    .dualr-drug-grid-1  { display: grid; grid-template-columns: 1fr; gap: 16px; }
-    .dualr-drug-grid-2  { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .dualr-drug-grid-3  { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
-    /* Demo selects */
-    .dualr-demo-grid    { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-
-    /* Steps bar */
-    .dualr-step-label { display: inline; }
-    .dualr-step-connector { width: 40px; }
-
-    /* Buttons */
-    .dualr-btn-primary { padding: 13px 30px; font-size: 15px; }
-    .dualr-btn-back    { padding: 11px 22px; font-size: 14px; }
-    .dualr-btn-cont    { padding: 11px 26px; font-size: 14px; }
-
-    /* Touch: bigger tap targets on mobile */
-    @media (max-width: 640px) {
-      .dualr-footer-disclaimer { text-align: left !important; max-width: 100% !important; }
-      .dualr-page-pad    { padding: 24px 16px 48px; }
-      .dualr-landing-pad { padding: 48px 20px 48px; }
-      .dualr-nav-pad     { padding: 12px 16px; }
-      .dualr-footer-pad  { padding: 20px 16px; }
-
-      .dualr-hero-h1    { font-size: 30px; letter-spacing: -0.01em; }
-      .dualr-hero-p     { font-size: 15px; }
-      .dualr-step-h3    { font-size: 21px; }
-      .dualr-results-h2 { font-size: 22px; }
-
-      .dualr-feature-grid { grid-template-columns: 1fr; margin-top: 40px; }
-      .dualr-risk-grid-2, .dualr-risk-grid-3 { grid-template-columns: 1fr; }
-      .dualr-drug-grid-2, .dualr-drug-grid-3 { grid-template-columns: 1fr; }
-      .dualr-demo-grid   { grid-template-columns: 1fr; }
-
-      .dualr-step-label  { display: none; }
-      .dualr-step-connector { width: 20px; }
-
-      .dualr-btn-primary { padding: 14px 22px; font-size: 15px; width: 100%; }
-      .dualr-btn-back  { padding: 13px 18px; font-size: 14px; min-height: 44px; }
-      .dualr-btn-cont  { padding: 13px 18px; font-size: 14px; min-height: 44px; flex: 1; }
-
-      input, select { font-size: 16px !important; /* prevents iOS zoom */ min-height: 44px; }
-    }
-
-    @media (min-width: 641px) and (max-width: 900px) {
-      .dualr-page-pad    { padding: 32px 24px 56px; }
-      .dualr-landing-pad { padding: 60px 28px 56px; }
-      .dualr-nav-pad     { padding: 14px 24px; }
-      .dualr-footer-pad  { padding: 20px 24px; }
-
-      .dualr-hero-h1    { font-size: 36px; }
-      .dualr-feature-grid { grid-template-columns: 1fr 1fr; }
-      .dualr-risk-grid-3  { grid-template-columns: 1fr 1fr; }
-      .dualr-drug-grid-3  { grid-template-columns: 1fr 1fr; }
-    }
-  `;
-
   // ── NAV ──
-  function Nav({ transparent }) {
+  function Nav({ landing }) {
     return (
-      <nav className="dualr-nav-pad" style={{
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        borderBottom: transparent ? "none" : `1px solid ${C.border}`,
-        background: transparent ? "transparent" : "rgba(249,248,246,0.92)", backdropFilter: "blur(10px)",
-        position: "sticky", top: 0, zIndex: 100,
-      }}>
-        <Logo onClick={goHome} compact />
+      <nav className={`nav ${landing ? "" : "ruled"}`}>
+        <Logo onClick={goHome} />
         {view !== "landing" && (
-          <button onClick={goHome} style={{
-            background: "none", border: `1px solid ${C.border}`, borderRadius: 6,
-            padding: "6px 14px", fontSize: 12, color: C.textMuted, cursor: "pointer",
-          }}>← Home</button>
+          <button className="btn btn-ghost btn-sm" onClick={goHome}>
+            <ArrowLeft size={14} weight="bold" aria-hidden="true" />Home
+          </button>
         )}
       </nav>
     );
@@ -438,85 +366,62 @@ export default function App() {
   // ── FOOTER ──
   function Footer() {
     return (
-      <footer className="dualr-footer-pad" style={{ borderTop: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16 }}>
+      <footer className="footer">
         <div>
-          <div style={{ fontSize: 11, color: C.textMuted, lineHeight: 1.7 }}>
-            <strong style={{ color: C.text, fontWeight: 600 }}>Su Lab</strong> · Biostatistics & Health Data Science
-          </div>
-          <div style={{ fontSize: 11, color: C.textMuted }}>Indiana University School of Medicine</div>
-          <div style={{ fontSize: 10, color: C.textMuted, marginTop: 4 }}>Licensed under Apache 2.0</div>
+          <div><strong>Su Lab</strong> · Biostatistics &amp; Health Data Science</div>
+          <div>Indiana University School of Medicine</div>
+          <div>Licensed under Apache 2.0</div>
         </div>
-        <div style={{ fontSize: 10, color: C.textMuted, maxWidth: 420, textAlign: "right", lineHeight: 1.6 }}
-          className="dualr-footer-disclaimer">
+        <div className="footer-legal">
           This tool provides research-derived risk estimates and does not constitute clinical advice, diagnosis, or treatment recommendation. No personal data is collected, stored, or transmitted.
         </div>
       </footer>
     );
   }
 
+  const nextIcon = <ArrowRight size={16} weight="bold" className="nudge" aria-hidden="true" />;
+  const backBtn = (onClick) => (
+    <button className="btn btn-ghost" onClick={onClick}>
+      <ArrowLeft size={16} weight="bold" aria-hidden="true" />Back
+    </button>
+  );
+
   // ═══════════════════════════════════
   //  LANDING
   // ═══════════════════════════════════
   if (view === "landing") {
     return (
-      <div style={base}>
-        <link href={fontLink} rel="stylesheet" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
-        <style>{globalCSS}</style>
-        <Nav transparent />
-
-        <div className="dualr-landing-pad" style={{ maxWidth: 880, margin: "0 auto", animation: "fadeIn 0.6s ease-out" }}>
-          <h1 className="dualr-hero-h1" style={{
-            fontFamily: ff.serif, fontWeight: 700, lineHeight: 1.15,
-            letterSpacing: "-0.02em", maxWidth: 680,
-          }}>
-            Phenotypic risk from{" "}
-            <span style={{ color: C.accent }}>medication history</span>
-          </h1>
-          <p className="dualr-hero-p" style={{ lineHeight: 1.7, color: C.textMuted, maxWidth: 540, marginTop: 20 }}>
-            DualR transforms drug records into disease risk estimates using knowledge extracted from large language models — without sharing or storing patient data.
-          </p>
-
-          <button onClick={() => { setView("flow"); setStep(0); }} className="dualr-btn-primary" style={{
-            marginTop: 36, background: C.bgDark, color: "#fff", border: "none",
-            borderRadius: 8, fontWeight: 600, cursor: "pointer",
-            transition: "transform 0.12s",
-          }}
-          onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
-          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
-          >
-            Start Assessment →
-          </button>
-
-          {/* Feature cards */}
-          <div className="dualr-feature-grid">
-            {[
-              { icon: "🔒", title: "Zero Data Retention", desc: "All processing happens in your session. Nothing is saved — close the tab and it's gone." },
-              { icon: "⚡", title: "16,000+ Drug Associations", desc: "Pre-computed from large-scale cohorts (All of Us, N=254K; INPC, N=1.13M)." },
-              { icon: "🧬", title: "Multi-Phenotype", desc: "Assess T2D, Hypertension, and AUD risk from a single medication list." },
-            ].map((f, i) => (
-              <div key={i} style={{
-                padding: 24, background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10,
-                animation: `fadeIn 0.5s ease-out ${0.15 + i * 0.1}s both`,
-              }}>
-                <div style={{ fontSize: 22, marginBottom: 12 }}>{f.icon}</div>
-                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{f.title}</div>
-                <div style={{ fontSize: 13, lineHeight: 1.6, color: C.textMuted }}>{f.desc}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* Privacy notice — replaces cookie banner */}
-          <div style={{
-            marginTop: 40, padding: 16, background: C.bgCard, border: `1px solid ${C.border}`,
-            borderRadius: 8, display: "flex", gap: 12, alignItems: "flex-start",
-          }}>
-            <span style={{ fontSize: 16, marginTop: 1 }}>🛡️</span>
-            <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.65 }}>
-              <strong style={{ color: C.text }}>Privacy.</strong> DualR uses no cookies, no tracking, no analytics, and no local storage. Your inputs exist only in browser memory during this session.
+      <div className="app">
+        <Nav landing />
+        <main className="landing">
+          <section className="hero">
+            <div>
+              <h1 className="rise">Phenotypic risk from <em>medication history</em></h1>
+              <p className="rise rise-1">
+                DualR turns medication records into disease risk estimates using knowledge from large language models, without sharing or storing patient data.
+              </p>
+              <button className="btn btn-primary btn-lg rise rise-2" onClick={() => { setView("flow"); setStep(0); }}>
+                Start assessment{nextIcon}
+              </button>
             </div>
-          </div>
-        </div>
+            <ValidationChart />
+          </section>
+
+          <section className="facts rise rise-3" aria-label="About DualR">
+            <div className="fact">
+              <div className="fact-big">16,000+</div>
+              <p>Drug associations pre-computed from large-scale cohorts: All of Us (N = 254K) and INPC (N = 1.13M).</p>
+            </div>
+            <div className="fact">
+              <div className="fact-big">Three conditions</div>
+              <p>Type 2 diabetes, hypertension and alcohol use disorder, assessed from a single medication list.</p>
+            </div>
+            <div className="fact">
+              <div className="fact-big">Nothing stored</div>
+              <p>No cookies, tracking, analytics or local storage. Inputs exist only in browser memory during this session.</p>
+            </div>
+          </section>
+        </main>
         <Footer />
       </div>
     );
@@ -527,87 +432,67 @@ export default function App() {
   // ═══════════════════════════════════
   if (view === "flow") {
     const stepNames = ["Conditions", "Demographics", "Medical History", "Medications", "Review"];
+    const ageVal = parseInt(demo.age, 10);
+    const demoValid = !isNaN(ageVal) && ageVal >= 18 && ageVal <= 120 && demo.gender && demo.race && demo.ethnicity;
+    const presentComos = Object.entries(comoAnswers).filter(([, v]) => v).map(([k]) => ALL_CHARLSON.find(c => c.id === k)?.label || k);
 
     return (
-      <div style={base}>
-        <link href={fontLink} rel="stylesheet" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
-        <style>{globalCSS}</style>
+      <div className="app">
         <Nav />
-
-        <div className="dualr-page-pad" style={{ maxWidth: 680, margin: "0 auto" }}>
+        <main className="flow">
           <Steps steps={stepNames} current={step} />
 
           {/* ── STEP 0: Phenotype ── */}
           {step === 0 && (
-            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Which conditions would you like to assess?</h3>
-              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 28, lineHeight: 1.6 }}>
-                Select one or more. Comorbidity questions adapt automatically — circular inputs are excluded, and prior answers are remembered within this session.
+            <section className="rise">
+              <h1 className="step-title">Which conditions would you like to assess?</h1>
+              <p className="step-desc">
+                Select one or more. Comorbidity questions adapt automatically: circular inputs are excluded, and prior answers are remembered within this session.
               </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div className="options">
                 {Object.values(PHENOTYPES).map(p => {
                   const sel = selectedPhenos.includes(p.id);
                   return (
-                    <button key={p.id} onClick={() => setSelectedPhenos(prev => prev.includes(p.id) ? prev.filter(x => x !== p.id) : [...prev, p.id])}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 14, padding: "16px 20px",
-                        background: sel ? C.accentLight : C.bgCard, border: `2px solid ${sel ? C.accent : C.border}`,
-                        borderRadius: 10, cursor: "pointer", textAlign: "left", transition: "all 0.15s",
-                      }}>
-                      <div style={{ width: 40, height: 40, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, background: sel ? C.accent : "#F3F4F6" }}>{p.icon}</div>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name} <span style={{ fontWeight: 400, fontSize: 11, color: C.textMuted }}>({p.abbr})</span></div>
-                        <div style={{ fontSize: 12, color: C.textMuted, marginTop: 1 }}>{p.desc}</div>
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ fontSize: 10, color: C.textMuted }}>N={p.n}</div>
-                        <div style={{ fontSize: 10, color: C.textMuted }}>Prev. {p.prevalence}</div>
-                      </div>
-                      <div style={{
-                        width: 20, height: 20, borderRadius: 5, border: `2px solid ${sel ? C.accent : C.border}`,
-                        background: sel ? C.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center",
-                        color: "#fff", fontSize: 11, transition: "all 0.15s",
-                      }}>{sel && "✓"}</div>
+                    <button key={p.id} className="option" aria-pressed={sel}
+                      onClick={() => setSelectedPhenos(prev => prev.includes(p.id) ? prev.filter(x => x !== p.id) : [...prev, p.id])}>
+                      <span className="tag">{p.abbr}</span>
+                      <span>
+                        <span className="option-name">{p.name}</span>
+                        <span className="option-desc" style={{ display: "block" }}>{p.desc}</span>
+                      </span>
+                      <span className="option-meta mono">N = {p.n}<br />Prev. {p.prevalence}</span>
+                      <span className="check" aria-hidden="true">{sel && <Check size={12} weight="bold" />}</span>
                     </button>
                   );
                 })}
               </div>
-              <button disabled={!selectedPhenos.length} onClick={() => setStep(1)} style={{
-                marginTop: 28, padding: "11px 26px", background: selectedPhenos.length ? C.bgDark : C.border,
-                color: selectedPhenos.length ? "#fff" : C.textMuted, border: "none", borderRadius: 7,
-                fontSize: 14, fontWeight: 600, cursor: selectedPhenos.length ? "pointer" : "not-allowed",
-              }}>Continue →</button>
-            </div>
+              <div className="actions end">
+                <button className="btn btn-primary" disabled={!selectedPhenos.length} onClick={() => setStep(1)}>
+                  Continue{nextIcon}
+                </button>
+              </div>
+            </section>
           )}
 
           {/* ── STEP 1: Demographics ── */}
           {step === 1 && (
-            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Demographics</h3>
-              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 28 }}>These form the baseline covariates in the prediction model.</p>
+            <section className="rise">
+              <h1 className="step-title">Demographics</h1>
+              <p className="step-desc">These form the baseline covariates in the prediction model.</p>
 
-              {/* Age — numeric input */}
-              <div style={{ marginBottom: 16 }}>
-                <label style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 5 }}>Age (years)</label>
-                <input
-                  type="number" min="18" max="120"
-                  value={demo.age || ""}
-                  onChange={e => setDemo({ ...demo, age: e.target.value })}
-                  placeholder="18 – 120"
-                  style={{ width: "100%", padding: "9px 14px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontFamily: ff.sans, background: C.bgCard }}
-                />
-              </div>
-
-              {/* Categorical selects */}
-              <div className="dualr-demo-grid">
+              <div className="fields">
+                <div className="field">
+                  <label htmlFor="age">Age (years)</label>
+                  <input id="age" className="input input-num mono" type="number" min="18" max="120" inputMode="numeric"
+                    value={demo.age || ""}
+                    onChange={e => setDemo({ ...demo, age: e.target.value })}
+                    placeholder="18-120" />
+                </div>
                 {DEMO_FIELDS.map(f => (
-                  <div key={f.id}>
-                    <label style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, display: "block", marginBottom: 5 }}>{f.label}</label>
-                    <select value={demo[f.id] || ""} onChange={e => setDemo({ ...demo, [f.id]: e.target.value })} style={{
-                      width: "100%", padding: "9px 14px", border: `1.5px solid ${C.border}`, borderRadius: 7,
-                      fontSize: 14, fontFamily: ff.sans, background: C.bgCard, color: demo[f.id] ? C.text : C.textMuted, cursor: "pointer", paddingRight: 30,
-                    }}>
+                  <div className="field" key={f.id}>
+                    <label htmlFor={f.id}>{f.label}</label>
+                    <select id={f.id} className={`select ${demo[f.id] ? "" : "empty"}`} value={demo[f.id] || ""}
+                      onChange={e => setDemo({ ...demo, [f.id]: e.target.value })}>
                       <option value="">Select…</option>
                       {f.options.map(o => <option key={o} value={o}>{o}</option>)}
                     </select>
@@ -615,163 +500,163 @@ export default function App() {
                 ))}
               </div>
 
-              <div className="dualr-btn-row" style={{ display: "flex", gap: 10, marginTop: 28, flexWrap: "wrap" }}>
-                <button onClick={() => setStep(0)} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
-                {(() => {
-                  const ageVal = parseInt(demo.age, 10);
-                  const valid = !isNaN(ageVal) && ageVal >= 18 && ageVal <= 120 && demo.gender && demo.race && demo.ethnicity;
-                  return (
-                    <button disabled={!valid} onClick={() => { setStep(2); startComoPhase(); }} style={{
-                      padding: "11px 26px", background: valid ? C.bgDark : C.border,
-                      color: valid ? "#fff" : C.textMuted, border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600,
-                      cursor: valid ? "pointer" : "not-allowed",
-                    }}>Continue →</button>
-                  );
-                })()}
+              <div className="actions">
+                {backBtn(() => setStep(0))}
+                <button className="btn btn-primary" disabled={!demoValid} onClick={() => { setStep(2); startComoPhase(); }}>
+                  Continue{nextIcon}
+                </button>
               </div>
-            </div>
+            </section>
           )}
 
           {/* ── STEP 2: Comorbidity Chat ── */}
           {step === 2 && (
-            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Medical History</h3>
-              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 20 }}>
+            <section className="rise">
+              <h1 className="step-title">Medical History</h1>
+              <p className="step-desc">
                 {comoQueue.length > 0
                   ? `${comoQueue.length} question${comoQueue.length > 1 ? "s" : ""} based on your selected conditions. Previously answered items are skipped.`
                   : "All comorbidity questions already answered from your previous selections."}
               </p>
-              <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 10, padding: 18, minHeight: 200, maxHeight: 380, overflowY: "auto" }}>
+              <div className="chat" aria-live="polite">
                 {chatMsgs.map((m, i) => (
-                  <div key={i}>
-                    <div style={{ display: "flex", justifyContent: m.agent ? "flex-start" : "flex-end", marginBottom: 10 }}>
-                      <div style={{
-                        maxWidth: "82%", padding: "10px 14px", borderRadius: m.agent ? "2px 14px 14px 14px" : "14px 2px 14px 14px",
-                        background: m.agent ? C.bgCard : C.accent, color: m.agent ? C.text : "#fff",
-                        border: m.agent ? `1px solid ${C.border}` : "none", fontSize: 13, lineHeight: 1.6,
-                        boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                      }}>
-                        {m.agent && <div style={{ fontSize: 9, color: C.accent, fontWeight: 600, marginBottom: 3, letterSpacing: "0.04em", textTransform: "uppercase" }}>DualR</div>}
+                  <div key={i} style={{ display: "grid", gap: 10 }}>
+                    <div className={`msg ${m.agent ? "agent" : "user"}`}>
+                      <div className="bubble">
                         {m.text}
-                        {m.tag && <div style={{ fontSize: 10, color: m.agent ? C.accent : "rgba(255,255,255,0.7)", marginTop: 3, fontStyle: "italic" }}>{m.tag}</div>}
+                        {m.tag && <div className="bubble-tag">{m.tag}</div>}
                       </div>
                     </div>
                     {m.isQ && i === chatMsgs.length - 1 && (
-                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 12 }}>
-                        <button onClick={() => answerComo(true)} style={{ padding: "10px 28px", background: C.success, color: "#fff", border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600, cursor: "pointer", minHeight: 44 }}>Yes</button>
-                        <button onClick={() => answerComo(false)} style={{ padding: "10px 28px", background: "#F0F1F3", color: C.text, border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer", minHeight: 44 }}>No</button>
+                      <div className="answer">
+                        <button className="btn btn-primary" onClick={() => answerComo(true)}>Yes</button>
+                        <button className="btn btn-ghost" onClick={() => answerComo(false)}>No</button>
                       </div>
                     )}
                   </div>
                 ))}
                 <div ref={chatEndRef} />
               </div>
-            </div>
+            </section>
           )}
 
           {/* ── STEP 3: Drug History ── */}
           {step === 3 && (
-            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Medication History</h3>
-              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 20 }}>
+            <section className="rise">
+              <h1 className="step-title">Medication History</h1>
+              <p className="step-desc">
                 Enter current and recent medications. Type drug names, paste a list, or upload a medication record.
               </p>
 
-              {/* Upload zone */}
-              <div style={{ border: `2px dashed ${C.border}`, borderRadius: 10, padding: 28, textAlign: "center", marginBottom: 20, background: "#FCFCFB", cursor: "pointer", transition: "border-color 0.2s" }}
-                onMouseEnter={e => e.currentTarget.style.borderColor = C.accent}
-                onMouseLeave={e => e.currentTarget.style.borderColor = C.border}>
-                <div style={{ fontSize: 24, marginBottom: 6 }}>📄</div>
-                <div style={{ fontSize: 13, fontWeight: 500 }}>Drop medication record here</div>
-                <div style={{ fontSize: 11, color: C.textMuted, marginTop: 3 }}>PDF, PNG, JPG, or plain text</div>
+              <div className="dropzone">
+                <span className="dropzone-icon"><FileArrowUp size={20} aria-hidden="true" /></span>
+                <span>
+                  <span className="dropzone-title" style={{ display: "block" }}>Drop medication record here</span>
+                  <span className="dropzone-sub" style={{ display: "block" }}>PDF, PNG, JPG, or plain text</span>
+                </span>
               </div>
 
-              {/* Manual entry */}
-              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-                <input value={drugInput} onChange={e => setDrugInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === "Enter") addDrug(drugInput); }}
-                  placeholder="Type medication name, press Enter…"
-                  style={{ flex: 1, padding: "9px 12px", border: `1.5px solid ${C.border}`, borderRadius: 7, fontSize: 13, fontFamily: ff.sans, background: C.bgCard, minHeight: 44 }} />
-                <button onClick={() => addDrug(drugInput)} style={{
-                  padding: "9px 16px", background: C.accent, color: "#fff", border: "none", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", minHeight: 44, whiteSpace: "nowrap",
-                }}>Add</button>
-              </div>
-
-              {/* Quick-add */}
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 6, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.04em" }}>Demo medications</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-                  {SAMPLE_DRUGS.filter(d => !drugs.includes(d)).slice(0, 4).map(d => (
-                    <button key={d} onClick={() => addDrug(d)} style={{
-                      padding: "4px 9px", background: "#F3F4F6", border: `1px solid ${C.border}`, borderRadius: 5,
-                      fontSize: 11, cursor: "pointer", fontFamily: ff.mono, color: C.textMuted,
-                    }}>+ {d.split(" ").slice(0, 2).join(" ")}…</button>
-                  ))}
+              <div className="field">
+                <label htmlFor="drug">Add a medication</label>
+                <div className="add-row">
+                  <input id="drug" className="input" value={drugInput} onChange={e => setDrugInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") addDrug(drugInput); }}
+                    placeholder="Type a medication name, press Enter" />
+                  <button className="btn btn-ghost" onClick={() => addDrug(drugInput)}>
+                    <Plus size={14} weight="bold" aria-hidden="true" />Add
+                  </button>
                 </div>
               </div>
 
-              {/* Drug list */}
+              {SAMPLE_DRUGS.some(d => !drugs.includes(d)) && (
+                <>
+                  <div className="chips-label">Demo medications</div>
+                  <div className="chips">
+                    {SAMPLE_DRUGS.filter(d => !drugs.includes(d)).slice(0, 4).map(d => (
+                      <button key={d} className="chip" title={d} onClick={() => addDrug(d)}>
+                        <Plus size={11} weight="bold" aria-hidden="true" />{d.split(" ").slice(0, 2).join(" ")}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+
               {drugs.length > 0 && (
-                <div style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 8, padding: 14, marginBottom: 20 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 8 }}>Added ({drugs.length})</div>
-                  {drugs.map((d, i) => (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: i < drugs.length - 1 ? `1px solid ${C.border}` : "none" }}>
-                      <span style={{ fontSize: 12, fontFamily: ff.mono }}>{d}</span>
-                      <button onClick={() => setDrugs(drugs.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: "#bbb", cursor: "pointer", fontSize: 16, padding: "0 4px" }}>×</button>
-                    </div>
-                  ))}
+                <div className="med-list">
+                  <div className="med-list-head">Added <span className="mono">({drugs.length})</span></div>
+                  <ul>
+                    {drugs.map((d, i) => (
+                      <li key={d}>
+                        <span>{d}</span>
+                        <button className="icon-btn" aria-label={`Remove ${d}`} onClick={() => setDrugs(drugs.filter((_, j) => j !== i))}>
+                          <X size={14} weight="bold" />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={() => setStep(2)} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
-                <button disabled={!drugs.length} onClick={() => { setError(null); setResults(null); setStep(4); }} style={{
-                  padding: "11px 26px", background: drugs.length ? C.bgDark : C.border,
-                  color: drugs.length ? "#fff" : C.textMuted, border: "none", borderRadius: 7, fontSize: 14, fontWeight: 600,
-                  cursor: drugs.length ? "pointer" : "not-allowed",
-                }}>Continue →</button>
+              <div className="actions">
+                {backBtn(() => setStep(2))}
+                <button className="btn btn-primary" disabled={!drugs.length} onClick={() => { setError(null); setResults(null); setStep(4); }}>
+                  Continue{nextIcon}
+                </button>
               </div>
-            </div>
+            </section>
           )}
 
           {/* ── STEP 4: Review ── */}
           {step === 4 && (
-            <div style={{ animation: "fadeIn 0.35s ease-out" }}>
-              <h3 className="dualr-step-h3" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 6 }}>Review & Compute</h3>
-              <p style={{ color: C.textMuted, fontSize: 14, marginBottom: 24 }}>Verify your inputs before generating risk estimates.</p>
+            <section className="rise">
+              <h1 className="step-title">Review &amp; Compute</h1>
+              <p className="step-desc">Verify your inputs before generating risk estimates.</p>
 
-              {[
-                { label: "Conditions", content: selectedPhenos.map(pid => `${PHENOTYPES[pid].icon} ${PHENOTYPES[pid].name}`).join("  ·  ") },
-                { label: "Demographics", content: [`Age: ${demo.age || "—"}`, ...DEMO_FIELDS.map(f => `${f.label}: ${demo[f.id] || "—"}`)].join("  ·  ") },
-                { label: `Comorbidities (${Object.values(comoAnswers).filter(Boolean).length} present)`, content: Object.entries(comoAnswers).filter(([, v]) => v).map(([k]) => ALL_CHARLSON.find(c => c.id === k)?.label || k).join(", ") || "None reported" },
-                { label: `Medications (${drugs.length})`, content: drugs.map(d => d.split(" ").slice(0, 3).join(" ")).join(" · ") },
-              ].map((s, i) => (
-                <div key={i} style={{ background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16, marginBottom: 10 }}>
-                  <div style={{ fontSize: 10, fontWeight: 600, color: C.accent, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
-                  <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>{s.content}</div>
+              <dl className="review">
+                <div className="review-row">
+                  <dt className="review-k">Conditions</dt>
+                  <dd className="review-v">{selectedPhenos.map(pid => PHENOTYPES[pid].name).join(", ")}</dd>
                 </div>
-              ))}
+                <div className="review-row">
+                  <dt className="review-k">Demographics</dt>
+                  <dd className="review-v">
+                    <ul>
+                      <li>Age: {demo.age || "Not set"}</li>
+                      {DEMO_FIELDS.map(f => <li key={f.id}>{f.label}: {demo[f.id] || "Not set"}</li>)}
+                    </ul>
+                  </dd>
+                </div>
+                <div className="review-row">
+                  <dt className="review-k">Comorbidities <span className="mono">({presentComos.length} present)</span></dt>
+                  <dd className="review-v">{presentComos.join(", ") || "None reported"}</dd>
+                </div>
+                <div className="review-row">
+                  <dt className="review-k">Medications <span className="mono">({drugs.length})</span></dt>
+                  <dd className="review-v mono"><ul>{drugs.map(d => <li key={d}>{d}</li>)}</ul></dd>
+                </div>
+              </dl>
 
-              <div style={{ padding: 14, background: C.warningLight, borderRadius: 7, border: `1px solid #FDE68A`, fontSize: 12, color: "#78480C", lineHeight: 1.6, marginTop: 16, marginBottom: 20 }}>
-                ⚠️ Risk estimates are derived from validated statistical models and do not constitute clinical advice, diagnosis, or treatment recommendation.
+              <div className="notice">
+                <Warning size={16} weight="bold" aria-hidden="true" />
+                <span>Risk estimates are derived from validated statistical models and do not constitute clinical advice, diagnosis, or treatment recommendation.</span>
               </div>
 
               {error && (
-                <div style={{ padding: 12, background: C.crimsonLight, border: `1px solid #FECACA`, borderRadius: 7, fontSize: 13, color: C.crimson, marginBottom: 12 }}>
-                  {error}
+                <div className="error" role="alert">
+                  <WarningCircle size={16} weight="bold" aria-hidden="true" />
+                  <span>{error}</span>
                 </div>
               )}
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button onClick={() => { setError(null); setStep(3); }} className="dualr-btn-back" style={{ background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 7, fontWeight: 500, cursor: "pointer" }}>← Back</button>
-                <button onClick={fetchResults} disabled={loading} style={{
-                  padding: "13px 30px", background: loading ? C.border : `linear-gradient(135deg, ${C.accent}, ${C.accentDark})`,
-                  color: loading ? C.textMuted : "#fff", border: "none", borderRadius: 8, fontSize: 15, fontWeight: 600,
-                  cursor: loading ? "not-allowed" : "pointer",
-                }}>{loading ? "Computing…" : "Compute Risk Estimates →"}</button>
+
+              <div className="actions">
+                {backBtn(() => { setError(null); setStep(3); })}
+                <button className="btn btn-primary btn-lg" onClick={fetchResults} disabled={loading} aria-busy={loading}>
+                  {loading ? "Computing…" : <>Compute risk estimates{nextIcon}</>}
+                </button>
               </div>
-            </div>
+            </section>
           )}
-        </div>
+        </main>
         <Footer />
       </div>
     );
@@ -781,303 +666,215 @@ export default function App() {
   //  RESULTS
   // ═══════════════════════════════════
 
-  // ── Waterfall chart for per-drug contributions ──
-  function DrugWaterfall({ drugs: drugList, accentColor }) {
+  // ── Diverging bar chart for per-drug contributions ──
+  function DrugWaterfall({ drugs: drugList }) {
     const scored = drugList.filter(d => !d.isSkipped);
     const skipped = drugList.filter(d => d.isSkipped);
     const maxAbs = scored.reduce((m, d) => Math.max(m, Math.abs(d.contribution)), 0.01);
-    const labelW = 130;
-    const valueW = 46;
-    const barAreaW = 520; // logical units; SVG is viewBox-scaled
-    const rowH = 28;
-    const gap = 4;
-    const totalRows = scored.length + (skipped.length > 0 ? skipped.length + 1 : 0);
-    const svgH = totalRows * (rowH + gap);
-    const centerX = labelW + barAreaW / 2;
-    const scale = (v) => (Math.abs(v) / maxAbs) * (barAreaW / 2) * 0.82;
+    const half = (v) => (Math.abs(v) / maxAbs) * 50 * 0.7; // % of track width
 
     return (
-      <div style={{ width: "100%", overflowX: "auto" }}>
-        <svg viewBox={`0 0 ${labelW + barAreaW + valueW} ${svgH}`} width="100%" style={{ display: "block", minWidth: 320 }}>
-          {/* Center baseline */}
-          <line x1={centerX} y1={0} x2={centerX} y2={svgH} stroke="#E5E4E1" strokeWidth="1" />
-
-          {scored.map((d, i) => {
-            const val = d.contribution;
-            const bw = scale(val);
-            const isPos = val >= 0;
-            const barX = isPos ? centerX : centerX - bw;
-            const y = i * (rowH + gap);
-            const color = isPos ? "#8B1A1A" : "#0A7E8C";
-            const fillColor = isPos ? "rgba(139,26,26,0.12)" : "rgba(10,126,140,0.12)";
-            return (
-              <g key={i}>
-                {/* Drug name */}
-                <text x={labelW - 8} y={y + rowH / 2 + 4} textAnchor="end"
-                  fontSize="11" fontFamily="'JetBrains Mono', monospace" fill="#1A1D21">
-                  {d.shortName.length > 16 ? d.shortName.slice(0, 15) + "…" : d.shortName}
-                </text>
-                {/* Bar */}
-                <rect x={barX} y={y + 4} width={bw} height={rowH - 8}
-                  fill={fillColor} stroke={color} strokeWidth="1.2" rx="2" />
-                {/* Value label */}
-                <text x={isPos ? centerX + bw + 5 : centerX - bw - 5}
-                  y={y + rowH / 2 + 4} textAnchor={isPos ? "start" : "end"}
-                  fontSize="10" fontFamily="'JetBrains Mono', monospace"
-                  fontWeight="600" fill={color}>
-                  {val > 0 ? "+" : ""}{val.toFixed(2)}
-                </text>
-              </g>
-            );
-          })}
-
-          {/* Skipped drugs */}
-          {skipped.length > 0 && (() => {
-            const sepY = scored.length * (rowH + gap);
-            return (
-              <g>
-                <line x1={labelW} y1={sepY + 2} x2={labelW + barAreaW} y2={sepY + 2} stroke="#E5E4E1" strokeWidth="1" strokeDasharray="4 3" />
-                {skipped.map((d, i) => {
-                  const y = sepY + gap + i * (rowH + gap);
-                  return (
-                    <g key={i}>
-                      <text x={labelW - 8} y={y + rowH / 2 + 4} textAnchor="end"
-                        fontSize="11" fontFamily="'JetBrains Mono', monospace" fill="#6C737F">
-                        {d.shortName.length > 16 ? d.shortName.slice(0, 15) + "…" : d.shortName}
-                      </text>
-                      <text x={centerX} y={y + rowH / 2 + 4} textAnchor="middle"
-                        fontSize="10" fontFamily="'Source Sans 3', sans-serif" fill="#6C737F" fontStyle="italic">
-                        not recognized
-                      </text>
-                    </g>
-                  );
-                })}
-              </g>
-            );
-          })()}
-        </svg>
+      <div className="wf">
+        {scored.map((d, i) => {
+          const val = d.contribution;
+          const w = half(val);
+          const isPos = val >= 0;
+          const side = isPos ? "left" : "right";
+          return (
+            <div className="wf-row" key={i}>
+              <span className="wf-name" title={d.shortName}>{d.shortName}</span>
+              <div className="wf-track" role="img" aria-label={`${d.shortName}: ${fmtSigned(val, 2)}`}>
+                <div className="wf-bar" style={{
+                  [side]: "50%", width: `max(${w}%, 2px)`,
+                  background: isPos ? "var(--mark-up)" : "var(--mark-down)",
+                  transformOrigin: `${side} center`,
+                  animation: `grow 0.8s var(--ease) ${0.15 + i * 0.05}s both`,
+                }} />
+                <span className="wf-val" style={{ [side]: `calc(50% + ${w}% + 6px)` }}>{fmtSigned(val, 2)}</span>
+              </div>
+            </div>
+          );
+        })}
+        {skipped.length > 0 && (
+          <div className="wf-skipped">
+            {skipped.map((d, i) => (
+              <div className="wf-row skipped" key={i}>
+                <span className="wf-name" title={d.shortName}>{d.shortName}</span>
+                <div className="wf-track"><span className="wf-na">not recognized</span></div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
 
-  // ── Compact horizontal score bar ──
+  // ── Centered score bar ──
   function ScoreBar({ label, value, maxAbs }) {
     const pct = Math.min(Math.abs(value) / Math.max(maxAbs, 0.01), 1) * 50; // % of half
     const isPos = value >= 0;
-    const color = isPos ? "#8B1A1A" : "#0A7E8C";
     return (
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 3 }}>
-          <span style={{ color: "#6C737F" }}>{label}</span>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, color }}>{value > 0 ? "+" : ""}{value.toFixed(3)}</span>
-        </div>
-        <div style={{ position: "relative", height: 6, background: "#F0F0EE", borderRadius: 3, overflow: "visible" }}>
-          <div style={{ position: "absolute", left: "50%", top: 0, width: 1, height: 6, background: "#C0BFBC" }} />
-          <div style={{
-            position: "absolute",
-            left: isPos ? "50%" : `${50 - pct}%`,
+      <div className="score">
+        <span className="score-label">{label}</span>
+        <div className="score-track">
+          <div className="score-fill" style={{
+            [isPos ? "left" : "right"]: "50%",
             width: `${pct}%`,
-            height: "100%",
-            background: color,
-            borderRadius: 3,
-            transition: "width 0.8s ease-out",
+            background: isPos ? "var(--mark-up)" : "var(--mark-down)",
+            transformOrigin: isPos ? "left center" : "right center",
+            animation: "grow 0.9s var(--ease) 0.2s both",
           }} />
         </div>
+        <span className="score-val">{fmtSigned(value, 3)}</span>
       </div>
     );
   }
 
   // ── Final risk probability bar ──
   function RiskBar({ value }) {
-    const pct = Math.round(value * 100);
-    const riskColor = pct < 20 ? "#0D7C5F" : pct < 40 ? "#B45309" : pct < 65 ? "#D97706" : "#8B1A1A";
-    const label = pct < 20 ? "Low" : pct < 40 ? "Moderate" : pct < 65 ? "Elevated" : "High";
+    const { pct, label, color } = riskBand(value);
     return (
       <div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 6 }}>
-          <span style={{ color: "#6C737F" }}>Combined risk probability</span>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: riskColor }}>{pct}% — {label}</span>
+        <div className="riskbar-head">
+          <span>Combined risk probability</span>
+          <span><span className="mono">{pct}%</span> <span style={{ color, fontWeight: 600 }}>{label}</span></span>
         </div>
-        <div style={{ height: 10, background: "#F0F0EE", borderRadius: 5, overflow: "hidden" }}>
-          <div style={{
-            width: `${pct}%`, height: "100%", borderRadius: 5,
-            background: `linear-gradient(90deg, ${riskColor}88, ${riskColor})`,
-            transition: "width 1s ease-out",
-          }} />
+        <div className="riskbar" role="img" aria-label={`${pct}% combined risk, ${label}`}>
+          <div className="riskbar-fill" style={{ width: `${pct}%`, background: color, animation: "grow 1.1s var(--ease) 0.2s both" }} />
         </div>
+        <div className="riskbar-scale" aria-hidden="true"><span>0%</span><span>50%</span><span>100%</span></div>
       </div>
     );
   }
 
   if (view === "results" && results) {
-    const phenoCount = selectedPhenos.length;
+    const nComos = Object.values(comoAnswers).filter(Boolean).length;
 
     return (
-      <div style={base}>
-        <link href={fontLink} rel="stylesheet" />
-        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5" />
-        <style>{globalCSS}</style>
+      <div className="app">
         <Nav />
-
-        <div className="dualr-page-pad" style={{ maxWidth: 860, margin: "0 auto" }}>
-          <div style={{ animation: "fadeIn 0.5s ease-out" }}>
-
-            {/* Header */}
-            <div style={{ display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 12px", background: "#ECFDF5", borderRadius: 16, marginBottom: 14 }}>
-              <div style={{ width: 5, height: 5, borderRadius: "50%", background: "#0D7C5F" }} />
-              <span style={{ fontSize: 11, fontWeight: 600, color: "#0D7C5F" }}>Analysis Complete</span>
-            </div>
-            <h2 className="dualr-results-h2" style={{ fontFamily: ff.serif, fontWeight: 700, marginBottom: 4 }}>Risk Assessment</h2>
-            <p style={{ color: C.textMuted, fontSize: 13, marginBottom: 28 }}>
-              {drugs.length} medication{drugs.length !== 1 ? "s" : ""} · {Object.values(comoAnswers).filter(Boolean).length} comorbidities · {selectedPhenos.map(pid => PHENOTYPES[pid].abbr).join(", ")}
+        <main className="results">
+          <div className="rise">
+            <div className="status-line"><CheckCircle size={16} weight="fill" aria-hidden="true" />Analysis complete</div>
+            <h1 className="results-title">Risk Assessment</h1>
+            <p className="results-meta">
+              {drugs.length} medication{drugs.length !== 1 ? "s" : ""}, {nComos} comorbidities, {selectedPhenos.map(pid => PHENOTYPES[pid].abbr).join(", ")}
             </p>
+          </div>
 
-            {/* One card per phenotype */}
-            {selectedPhenos.map((pid, phenoIdx) => {
-              const p = PHENOTYPES[pid];
-              const r = results[pid];
-              const comp = r.components || {};
-              const drugEffect = comp.drug_effect ?? null;
-              const demoEffect = comp.demo_effect ?? null;
-              const comoEffect = comp.como_effect ?? null;
-              const maxDualR = Math.max(Math.abs(r.dualr_nocot), Math.abs(r.dualr_cot), 0.01);
+          {/* One panel per phenotype */}
+          {selectedPhenos.map((pid, phenoIdx) => {
+            const p = PHENOTYPES[pid];
+            const r = results[pid];
+            const comp = r.components || {};
+            const drugEffect = comp.drug_effect ?? null;
+            const demoEffect = comp.demo_effect ?? null;
+            const comoEffect = comp.como_effect ?? null;
+            const maxDualR = Math.max(Math.abs(r.dualr_nocot), Math.abs(r.dualr_cot), 0.01);
 
-              // Interpretation line
-              const pct = Math.round(r.risk * 100);
-              const riskWord = pct < 20 ? "Low" : pct < 40 ? "Moderate" : pct < 65 ? "Elevated" : "High";
-              const driverWord = drugEffect !== null
-                ? (Math.abs(drugEffect) > Math.abs(demoEffect ?? 0) + Math.abs(comoEffect ?? 0)
-                    ? "medication profile" : "clinical factors")
-                : "medication profile";
+            // Interpretation line
+            const riskWord = riskBand(r.risk).label;
+            const driverWord = drugEffect !== null
+              ? (Math.abs(drugEffect) > Math.abs(demoEffect ?? 0) + Math.abs(comoEffect ?? 0)
+                  ? "medication profile" : "clinical factors")
+              : "medication profile";
 
-              return (
-                <div key={pid} style={{
-                  background: C.bgCard, border: `1px solid ${C.border}`, borderRadius: 14,
-                  padding: 24, marginBottom: 24,
-                  animation: `scaleIn 0.4s ease-out ${phenoIdx * 0.08}s both`,
-                }}>
-                  {/* ── Phenotype label ── */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 8, background: `${p.color}18`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{p.icon}</div>
+            const adjustments = [
+              demoEffect !== null && { name: "Demographic adjustment", ctx: `Age ${demo.age}, ${demo.gender}, ${demo.race}, ${demo.ethnicity}`, v: demoEffect },
+              comoEffect !== null && { name: "Comorbidity adjustment", ctx: `${nComos} condition${nComos !== 1 ? "s" : ""} present`, v: comoEffect },
+              drugEffect !== null && { name: "Drug signal adjustment", ctx: `${drugs.length - (r.n_skipped_drugs || 0)} drugs scored`, v: drugEffect },
+            ].filter(Boolean);
+
+            return (
+              <article key={pid} className="panel result rise" style={{ animationDelay: `${0.08 + phenoIdx * 0.08}s` }}>
+                <header className="result-head">
+                  <span className="tag" style={{ background: "var(--accent)", color: "var(--on-accent)" }}>{p.abbr}</span>
+                  <div>
+                    <h2 className="result-name">{p.name}</h2>
+                    <div className="result-sub">Population prevalence: <span className="mono">{p.prevalence}</span></div>
+                  </div>
+                  <div className="result-auc">
+                    Validated AUC
+                    <span className="mono">{r.auc.base.toFixed(3)} → <strong>{r.auc.dualr.toFixed(3)}</strong></span>
+                  </div>
+                </header>
+
+                <div className="result-body">
+                  {/* A. Summary */}
+                  <div className="summary">
+                    <RiskGauge value={r.risk} size={140} />
                     <div>
-                      <div style={{ fontFamily: ff.serif, fontSize: 17, fontWeight: 700 }}>{p.name}</div>
-                      <div style={{ fontSize: 11, color: C.textMuted }}>Population prevalence: {p.prevalence}</div>
-                    </div>
-                    <div style={{ marginLeft: "auto", textAlign: "right" }}>
-                      <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 2 }}>Validated AUC</div>
-                      <div style={{ fontFamily: ff.mono, fontSize: 11, color: C.accentDark }}>{r.auc.base.toFixed(3)} → <strong>{r.auc.dualr.toFixed(3)}</strong></div>
-                    </div>
-                  </div>
-
-                  {/* ── A. Risk Summary Row ── */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 24, flexWrap: "wrap" }}>
-                    <RiskGauge value={r.risk} size={120} />
-                    <div style={{ flex: 1, minWidth: 180 }}>
-                      <div style={{ fontFamily: ff.serif, fontSize: 15, fontWeight: 700, marginBottom: 6, lineHeight: 1.4 }}>
-                        {riskWord} risk driven primarily by {driverWord}
-                      </div>
-                      <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>
+                      <div className="summary-lead">{riskWord} risk driven primarily by {driverWord}</div>
+                      <p className="summary-text">
                         The model integrates drug associations, demographics, and comorbidities. The drug signal (DualR score) carries the most predictive weight.
-                      </div>
+                      </p>
                     </div>
                   </div>
 
-                  {/* ── B. Drug Signal Section ── */}
-                  <div style={{ marginBottom: 20 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
-                      <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Drug Signal</span>
-                      <span style={{ fontSize: 11, color: C.textMuted }}>DualR log₂ OR scores relative to prevalence</span>
+                  {/* B. Drug signal */}
+                  <section>
+                    <div className="block-head">
+                      <h3 className="block-title">Drug Signal</h3>
+                      <span className="block-sub">DualR log₂ OR scores relative to prevalence</span>
                     </div>
-
-                    {/* Fast / Slow score bars */}
-                    <div style={{ background: "#FAFAF8", border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px", marginBottom: 12 }}>
+                    <div className="subpanel tint">
                       <ScoreBar label="Fast reasoning (no CoT)" value={r.dualr_nocot} maxAbs={maxDualR} />
                       <ScoreBar label="Slow reasoning (CoT)" value={r.dualr_cot} maxAbs={maxDualR} />
                     </div>
-
-                    {/* Waterfall */}
-                    <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, padding: "14px 16px", background: C.bgCard }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 10 }}>
-                        Per-drug contributions
-                        <span style={{ fontWeight: 400, color: C.textMuted, marginLeft: 8 }}>
-                          positive = risk-increasing · negative = protective
-                        </span>
+                    <div className="subpanel">
+                      <div className="block-head" style={{ marginBottom: 8 }}>
+                        <h4 className="block-title" style={{ fontSize: 13.5 }}>Per-drug contributions</h4>
+                      </div>
+                      <div className="waterfall-legend">
+                        <span><i style={{ background: "var(--mark-up)" }} />Risk-increasing (positive)</span>
+                        <span><i style={{ background: "var(--mark-down)" }} />Protective (negative)</span>
                       </div>
                       {r.topDrugs.length > 0
-                        ? <DrugWaterfall drugs={r.topDrugs} accentColor={p.color} />
-                        : <div style={{ fontSize: 12, color: C.textMuted, padding: "8px 0" }}>No drug contributions available.</div>
+                        ? <DrugWaterfall drugs={r.topDrugs} />
+                        : <div className="muted" style={{ fontSize: 13, padding: "8px 0" }}>No drug contributions available.</div>
                       }
                     </div>
-                  </div>
+                  </section>
 
-                  {/* ── C. Clinical Adjustments ── */}
-                  <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: C.textMuted, marginBottom: 8 }}>Clinical Adjustments</div>
-                    <div style={{ background: "#FAFAF8", border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px" }}>
-                      {demoEffect !== null ? (
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "5px 0", borderBottom: `1px solid ${C.border}` }}>
-                          <span style={{ color: C.textMuted }}>
-                            Demographic adjustment
-                            <span style={{ marginLeft: 8, color: "#9CA3AF" }}>Age {demo.age} · {demo.gender} · {demo.race} · {demo.ethnicity}</span>
-                          </span>
-                          <span style={{ fontFamily: ff.mono, fontWeight: 600, color: demoEffect > 0 ? "#8B1A1A" : demoEffect < 0 ? "#0A7E8C" : C.textMuted }}>
-                            {demoEffect > 0 ? "+" : ""}{demoEffect.toFixed(4)}
-                          </span>
+                  {/* C. Clinical adjustments */}
+                  <section>
+                    <div className="block-head">
+                      <h3 className="block-title">Clinical Adjustments</h3>
+                      <span className="block-sub">Change in predicted probability</span>
+                    </div>
+                    <div className="subpanel" style={{ paddingTop: 6, paddingBottom: 6 }}>
+                      {adjustments.length > 0 ? (
+                        <div className="adjust">
+                          {adjustments.map(a => (
+                            <div className="adjust-row" key={a.name}>
+                              <span className="adjust-name">{a.name}<span className="adjust-ctx">{a.ctx}</span></span>
+                              <span className="adjust-val">{fmtSigned(a.v, 4)}</span>
+                            </div>
+                          ))}
                         </div>
-                      ) : null}
-                      {comoEffect !== null ? (
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "5px 0", borderBottom: demoEffect !== null ? `1px solid ${C.border}` : "none" }}>
-                          <span style={{ color: C.textMuted }}>
-                            Comorbidity adjustment
-                            <span style={{ marginLeft: 8, color: "#9CA3AF" }}>{Object.values(comoAnswers).filter(Boolean).length} condition{Object.values(comoAnswers).filter(Boolean).length !== 1 ? "s" : ""} present</span>
-                          </span>
-                          <span style={{ fontFamily: ff.mono, fontWeight: 600, color: comoEffect > 0 ? "#8B1A1A" : comoEffect < 0 ? "#0A7E8C" : C.textMuted }}>
-                            {comoEffect > 0 ? "+" : ""}{comoEffect.toFixed(4)}
-                          </span>
-                        </div>
-                      ) : null}
-                      {drugEffect !== null ? (
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "5px 0" }}>
-                          <span style={{ color: C.textMuted }}>
-                            Drug signal adjustment
-                            <span style={{ marginLeft: 8, color: "#9CA3AF" }}>{drugs.length - (r.n_skipped_drugs || 0)} drugs scored</span>
-                          </span>
-                          <span style={{ fontFamily: ff.mono, fontWeight: 600, color: drugEffect > 0 ? "#8B1A1A" : drugEffect < 0 ? "#0A7E8C" : C.textMuted }}>
-                            {drugEffect > 0 ? "+" : ""}{drugEffect.toFixed(4)}
-                          </span>
-                        </div>
-                      ) : null}
-                      {demoEffect === null && comoEffect === null && drugEffect === null && (
-                        <div style={{ fontSize: 12, color: C.textMuted }}>Component breakdown not available.</div>
+                      ) : (
+                        <div className="muted" style={{ fontSize: 13, padding: "8px 0" }}>Component breakdown not available.</div>
                       )}
                     </div>
-                  </div>
+                  </section>
 
-                  {/* ── D. Final Risk Bar ── */}
+                  {/* D. Final risk */}
                   <RiskBar value={r.risk} />
                 </div>
-              );
-            })}
+              </article>
+            );
+          })}
 
-            {/* Action buttons */}
-            <div className="dualr-btn-row" style={{ display: "flex", gap: 10, marginBottom: 24, flexWrap: "wrap" }}>
-              <button onClick={goHome} style={{
-                padding: "11px 26px", background: C.bgDark, color: "#fff", border: "none",
-                borderRadius: 7, fontSize: 14, fontWeight: 600, cursor: "pointer",
-              }}>New Assessment</button>
-              <button onClick={() => { setStep(0); setView("flow"); }} style={{
-                padding: "11px 26px", background: "transparent", border: `1.5px solid ${C.border}`,
-                borderRadius: 7, fontSize: 14, fontWeight: 500, cursor: "pointer",
-              }}>Modify Inputs</button>
-            </div>
-
-            {/* Disclaimer */}
-            <div style={{ padding: 16, background: "#F8F8F6", borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 12, color: C.textMuted, lineHeight: 1.7 }}>
-              <strong style={{ color: C.text }}>Important.</strong>{" "}
-              Risk estimates are generated using the DualR method validated on All of Us (N=254,487) and Indiana Network for Patient Care (N=1.13M). Results reflect statistical associations and do not constitute clinical diagnosis or treatment recommendation. No information was stored during this session.
-            </div>
+          <div className="actions" style={{ justifyContent: "flex-start" }}>
+            <button className="btn btn-primary" onClick={goHome}>New assessment</button>
+            <button className="btn btn-ghost" onClick={() => { setStep(0); setView("flow"); }}>Modify inputs</button>
           </div>
-        </div>
+
+          <p className="disclaimer">
+            <strong>Important.</strong>{" "}
+            Risk estimates are generated using the DualR method validated on All of Us (N=254,487) and Indiana Network for Patient Care (N=1.13M). Results reflect statistical associations and do not constitute clinical diagnosis or treatment recommendation. No information was stored during this session.
+          </p>
+        </main>
         <Footer />
       </div>
     );
