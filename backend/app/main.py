@@ -53,9 +53,12 @@ PREVALENCES = {"t2d": 0.109, "htn": 0.330, "aud": 0.078}
 # Per-drug log2 OR is clipped to this range, as in dualr_post.py compute_log_odds.
 LOG_OR_CLIP = 10.0
 
-# Categorical encoding (matches ml.py reference encoding)
+# Categorical encoding (matches ml.py reference encoding). ml.py codes the reference as 0
+# and the remaining categories in order of first appearance in the AoU EMR file, which
+# gave Woman before Others and Others before Black. The bundles' scaler stats confirm
+# this (race mean 0.639, sd 0.784 for the AoU race mix).
 GENDER_MAP = {"Man": 0, "Woman": 1, "Other": 2}
-RACE_MAP = {"White": 0, "Black": 1, "Others": 2}
+RACE_MAP = {"White": 0, "Others": 1, "Black": 2}
 ETHNICITY_MAP = {"Others": 0, "Hispanic": 1}
 
 MODEL_DIR = os.getenv("MODEL_DIR", "models")
