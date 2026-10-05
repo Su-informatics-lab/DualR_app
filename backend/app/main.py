@@ -75,6 +75,13 @@ CATCHAT_BUDGET = float(os.getenv("CATCHAT_BUDGET", "45"))
 CATCHAT_MAX_TOKENS = int(os.getenv("CATCHAT_MAX_TOKENS", "4096"))
 CATCHAT_CONCURRENCY = int(os.getenv("CATCHAT_CONCURRENCY", "12"))
 
+# NLM RxNav approximate match, used to keep non-medication text (food, chat, typos with
+# no close drug) away from CatChat. Real and misspelled drug names score about 8 or
+# more; unrelated text scores lower or returns no candidate.
+RXNAV_URL = os.getenv("RXNAV_URL", "https://rxnav.nlm.nih.gov/REST")
+RXNAV_MIN_SCORE = float(os.getenv("RXNAV_MIN_SCORE", "8"))
+RXNAV_TIMEOUT = float(os.getenv("RXNAV_TIMEOUT", "5"))
+
 # ═══════════════════════════════════════════
 # Global State
 # ═══════════════════════════════════════════
@@ -266,6 +273,38 @@ async def query_catchat(
         return None
 
 
+async def find_non_drugs(names: set[str]) -> set[str]:
+    """
+    Return the names RxNav does not match to any medication concept with
+    score >= RXNAV_MIN_SCORE. If RxNav cannot be reached, a name is kept
+    (treated as a possible drug) so an outage never drops real medications.
+    """
+    if not names:
+        return set()
+
+    async with httpx.AsyncClient(timeout=RXNAV_TIMEOUT) as client:
+        async def check(name: str) -> bool:
+            try:
+                resp = await client.get(
+                    f"{RXNAV_URL}/approximateTerm.json",
+                    params={"term": name, "maxEntries": 1, "option": 1},
+                )
+                resp.raise_for_status()
+                candidates = resp.json().get("approximateGroup", {}).get("candidate", [])
+                score = float(candidates[0].get("score", 0)) if candidates else 0.0
+                return score < RXNAV_MIN_SCORE
+            except Exception as e:
+                logger.warning(f"RxNav check failed for {name!r}; treating as a drug: {e}")
+                return False
+
+        ordered = sorted(names)
+        flags = await asyncio.gather(*(check(n) for n in ordered))
+    non_drugs = {n for n, flag in zip(ordered, flags) if flag}
+    if non_drugs:
+        logger.info(f"Not sent to CatChat (no RxNav match): {sorted(non_drugs)}")
+    return non_drugs
+
+
 async def score_novel_drugs(novel: dict[str, list[str]]) -> dict[str, list[str]]:
     """
     Query CatChat concurrently for every (disease, drug, mode) absent from the lookup
@@ -343,8 +382,9 @@ async def api_health():
 async def predict(req: PredictRequest):
     results = {}
 
-    # Drugs absent from each disease's lookup table (capped at 10 per disease), scored
-    # with CatChat for all diseases at once before the per-disease loop.
+    # Drugs absent from each disease's lookup table (capped at 10 per disease). Text that
+    # RxNav does not recognise as a medication is skipped; the rest is scored with
+    # CatChat for all diseases at once before the per-disease loop.
     novel_by_disease = {
         disease: [d for d in req.drugs if d.strip() not in drug_probs.get(disease, {})]
         for disease in req.diseases
@@ -354,6 +394,12 @@ async def predict(req: PredictRequest):
         disease: list(dict.fromkeys(d.strip() for d in drugs))[:10]
         for disease, drugs in novel_by_disease.items()
     }
+    non_drugs = await find_non_drugs({d for drugs in to_query.values() for d in drugs})
+    candidates = to_query
+    to_query = {
+        disease: [d for d in drugs if d not in non_drugs]
+        for disease, drugs in candidates.items()
+    }
     if any(to_query.values()) and (not CATCHAT_BASE_URL or not CATCHAT_MODEL):
         first = next(d for drugs in to_query.values() for d in drugs)
         raise HTTPException(
@@ -361,7 +407,11 @@ async def predict(req: PredictRequest):
             f"Novel drug scoring failed for '{first}': CatChat not configured "
             f"(CATCHAT_BASE_URL={CATCHAT_BASE_URL!r}, CATCHAT_MODEL={CATCHAT_MODEL!r})"
         )
-    skipped_by_disease = await score_novel_drugs(to_query)
+    no_probability = await score_novel_drugs(to_query)
+    skipped_by_disease = {
+        disease: [d for d in drugs if d in non_drugs or d in no_probability[disease]]
+        for disease, drugs in candidates.items()
+    }
 
     for disease in req.diseases:
         if disease not in PREVALENCES:
