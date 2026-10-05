@@ -299,8 +299,9 @@ def predict_risk(bundle: dict, rows: pd.DataFrame) -> float:
 async def normalize_entry(text: str, client: httpx.AsyncClient) -> str | None:
     """
     Ask CatChat whether free text names a medication, vitamin or supplement.
-    Returns its English generic name, or None when CatChat says it is not one.
-    On any failure the original text is returned, so the entry is kept.
+    Returns its English generic name, or None when CatChat says it is not one or gives
+    no usable answer. An entry CatChat cannot name in time would not get scored in
+    time either, and passing it on lets CatChat assign arbitrary text a probability.
     """
     prompt = (
         f"A patient typed this entry into a list of their medications: \"{text}\"\n"
@@ -328,14 +329,14 @@ async def normalize_entry(text: str, client: httpx.AsyncClient) -> str | None:
         lines = content.strip().splitlines()
         answer = lines[0].strip().strip("\"'.*`").strip() if lines else ""
         if not answer:
-            logger.warning(f"CatChat gave no answer when normalising {text!r}; keeping it")
-            return text
+            logger.warning(f"CatChat gave no answer when normalising {text!r}; skipping it")
+            return None
         if answer.upper().startswith("NONE"):
             return None
         return answer[:120]
     except Exception as e:
-        logger.warning(f"CatChat normalisation failed for {text!r}; keeping it: {e}")
-        return text
+        logger.warning(f"CatChat normalisation failed for {text!r}; skipping it: {e}")
+        return None
 
 
 async def screen_entries(names: set[str], timeout: float) -> tuple[set[str], dict[str, str]]:
@@ -344,8 +345,8 @@ async def screen_entries(names: set[str], timeout: float) -> tuple[set[str], dic
 
     1. RxNav approximate match with score >= RXNAV_MIN_SCORE: a medication, queried
        as typed. If RxNav cannot be reached the entry is also kept as typed.
-    2. Otherwise CatChat is asked for an English generic name (normalize_entry);
-       NONE marks the entry as not a medication.
+    2. Otherwise CatChat is asked for an English generic name (normalize_entry). NONE,
+       no usable answer or no answer within `timeout` marks it as not a medication.
 
     Returns (non_medications, entry -> text to query CatChat with).
     """
@@ -391,7 +392,8 @@ async def screen_entries(names: set[str], timeout: float) -> tuple[set[str], dic
                 else:
                     query_text[name] = english
             else:
-                query_text[name] = name  # timed out: keep the entry as typed
+                logger.warning(f"CatChat normalisation timed out for {name!r}; skipping it")
+                non_drugs.add(name)
         renamed = {n: t for n, t in query_text.items() if n in tasks and t != n}
         if renamed:
             logger.info(f"Normalised by CatChat: {renamed}")
