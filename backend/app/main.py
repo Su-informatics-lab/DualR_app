@@ -50,6 +50,9 @@ CHARLSON_COMORBIDITIES = [
 
 PREVALENCES = {"t2d": 0.109, "htn": 0.330, "aud": 0.078}
 
+# Per-drug log2 OR is clipped to this range, as in dualr_post.py compute_log_odds.
+LOG_OR_CLIP = 10.0
+
 # Categorical encoding (matches ml.py reference encoding)
 GENDER_MAP = {"Man": 0, "Woman": 1, "Other": 2}
 RACE_MAP = {"White": 0, "Black": 1, "Others": 2}
@@ -166,8 +169,8 @@ def compute_dualr_score(
     baseline_prob: float,
 ) -> float:
     """
-    Sum of log2 odds ratios for known drugs relative to disease prevalence.
-    Matches dualr_post.py aggregation.
+    Sum of per-drug log2 odds ratios (each clipped to +/-LOG_OR_CLIP) for known drugs
+    relative to disease prevalence. Matches dualr_post.py aggregation.
     """
     probs_table = drug_probs.get(disease, {})
     log_odds = []
@@ -178,7 +181,7 @@ def compute_dualr_score(
             drug_odds = p / (1 - p)
             base_odds = baseline_prob / (1 - baseline_prob)
             or_val = max(1e-10, drug_odds / base_odds)
-            log_odds.append(np.log2(or_val))
+            log_odds.append(float(np.clip(np.log2(or_val), -LOG_OR_CLIP, LOG_OR_CLIP)))
     return sum(log_odds) if log_odds else 0.0
 
 
@@ -447,10 +450,16 @@ async def predict(req: PredictRequest):
             contrib_cot = 0.0
             if "nocot" in entry:
                 p = max(1e-10, min(1 - 1e-10, entry["nocot"]))
-                contrib_nocot = np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence))))
+                contrib_nocot = float(np.clip(
+                    np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence)))),
+                    -LOG_OR_CLIP, LOG_OR_CLIP,
+                ))
             if "cot" in entry:
                 p = max(1e-10, min(1 - 1e-10, entry["cot"]))
-                contrib_cot = np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence))))
+                contrib_cot = float(np.clip(
+                    np.log2(max(1e-10, (p / (1 - p)) / (prevalence / (1 - prevalence)))),
+                    -LOG_OR_CLIP, LOG_OR_CLIP,
+                ))
             top_drugs.append({
                 "name": drug,
                 "short_name": " ".join(drug.split()[:2]),
