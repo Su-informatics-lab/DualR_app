@@ -200,6 +200,84 @@ function ValidationChart() {
   );
 }
 
+// ── Computation progress (background job) ──
+const fmtElapsed = (ms) => {
+  const sec = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+};
+
+function ComputeProgress({ progress, elapsedMs, nConditions, onCancel }) {
+  const { total = 0, done = 0, stage = "queued", drugs = [] } = progress || {};
+  const pct = total ? Math.round((done / total) * 100) : 0;
+  const llmTotal = drugs.reduce((a, d) => a + d.total, 0);
+  const llmDone = drugs.reduce((a, d) => a + d.done, 0);
+  const at = ["queued", "estimating", "modeling", "done"].indexOf(stage);
+  const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  const steps = [
+    { key: "lookup", label: "Look up medications in the DualR table", state: at >= 1 ? "done" : "active" },
+    {
+      key: "llm",
+      label: drugs.length
+        ? `Estimate ${plural(drugs.length, "medication")} not in the table`
+        : "No medications outside the table",
+      detail: drugs.length ? `${llmDone} of ${llmTotal} estimates` : null,
+      state: at > 1 ? "done" : at === 1 ? "active" : "pending",
+    },
+    { key: "model", label: `Run the risk model for ${plural(nConditions, "condition")}`, state: at >= 3 ? "done" : at === 2 ? "active" : "pending" },
+  ];
+
+  return (
+    <section className="rise">
+      <h1 className="step-title">Computing risk estimates</h1>
+      <p className="step-desc">
+        Medications in the DualR table are scored instantly. The others are estimated by a large
+        language model, twice per condition, which can take a few minutes. Keep this tab open.
+      </p>
+
+      <div className="panel compute">
+        <div className="compute-head">
+          <span className="compute-pct">{pct}<small>%</small></span>
+          <span className="compute-time">Elapsed <span className="mono">{fmtElapsed(elapsedMs)}</span></span>
+        </div>
+        <div className="compute-bar" role="progressbar" aria-label="Computation progress"
+          aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+          <div className="compute-fill" style={{ width: `${Math.max(pct, 2)}%` }} />
+        </div>
+
+        <ol className="cstep-list" aria-live="polite">
+          {steps.map(st => (
+            <li key={st.key} className={`cstep ${st.state}`}>
+              <span className="cstep-mark" aria-hidden="true">
+                {st.state === "done" && <Check size={11} weight="bold" />}
+              </span>
+              <span className="cstep-label">{st.label}</span>
+              {st.detail && <span className="cstep-detail mono">{st.detail}</span>}
+            </li>
+          ))}
+        </ol>
+
+        {drugs.length > 0 && (
+          <ul className="cdrug-list" aria-label="Estimates per medication">
+            {drugs.map(d => (
+              <li key={d.name} className={d.done >= d.total ? "complete" : ""}>
+                <span className="cdrug-name" title={d.name}>{d.name}</span>
+                <span className="cdrug-bar"><span style={{ width: `${d.total ? (d.done / d.total) * 100 : 0}%` }} /></span>
+                <span className="cdrug-count mono">{d.done}/{d.total}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="actions">
+        <button className="btn btn-ghost" onClick={onCancel}>
+          <X size={14} weight="bold" aria-hidden="true" />Cancel
+        </button>
+      </div>
+    </section>
+  );
+}
+
 // ═══════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════
@@ -219,6 +297,10 @@ export default function App() {
   const [chatMsgs, setChatMsgs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  // Background prediction job: { id, progress, startedAt, showProgress }
+  const [job, setJob] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
+  const jobIdRef = useRef(null);
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -239,6 +321,10 @@ export default function App() {
     setChatMsgs([]);
     setLoading(false);
     setError(null);
+    if (jobIdRef.current) {
+      fetch(`/api/predict/jobs/${jobIdRef.current}`, { method: "DELETE" }).catch(() => {});
+    }
+    setJob(null);
   }, []);
 
   // Build comorbidity queue: union of required comos, minus already-answered ones
@@ -298,11 +384,32 @@ export default function App() {
     setDrugInput("");
   }
 
+  function mapResults(data) {
+    const mapped = {};
+    for (const [pid, r] of Object.entries(data.results)) {
+      mapped[pid] = {
+        risk: r.risk,
+        dualr_nocot: r.dualr_nocot,
+        dualr_cot: r.dualr_cot,
+        auc: PHENOTYPES[pid].auc,
+        components: r.components || null,
+        n_skipped_drugs: r.n_skipped_drugs || 0,
+        topDrugs: r.top_drugs.map(d => ({
+          label: d.name || d.short_name,
+          contribution: d.contribution_combined,
+          isSkipped: d.is_skipped,
+        })),
+      };
+    }
+    return mapped;
+  }
+
+  // Starts a background job; the polling effect below follows it to the result.
   async function fetchResults() {
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetch('/api/predict', {
+      const resp = await fetch('/api/predict/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -324,30 +431,72 @@ export default function App() {
         throw new Error(err.detail || `Server error (HTTP ${resp.status})`);
       }
       const data = await resp.json();
-      const mapped = {};
-      for (const [pid, r] of Object.entries(data.results)) {
-        mapped[pid] = {
-          risk: r.risk,
-          dualr_nocot: r.dualr_nocot,
-          dualr_cot: r.dualr_cot,
-          auc: PHENOTYPES[pid].auc,
-          components: r.components || null,
-          n_skipped_drugs: r.n_skipped_drugs || 0,
-          topDrugs: r.top_drugs.map(d => ({
-            label: d.name || d.short_name,
-            contribution: d.contribution_combined,
-            isSkipped: d.is_skipped,
-          })),
-        };
-      }
-      setResults(mapped);
-      setView("results");
+      setJob({ id: data.job_id, progress: data.progress, startedAt: Date.now(), showProgress: false });
     } catch (e) {
       setError(e.message || "Prediction failed. Please try again.");
-    } finally {
       setLoading(false);
     }
   }
+
+  function cancelJob() {
+    if (job) fetch(`/api/predict/jobs/${job.id}`, { method: "DELETE" }).catch(() => {});
+    setJob(null);
+    setLoading(false);
+  }
+
+  // Poll the running job. Table-only requests finish before the first poll, so the
+  // progress view only appears when the job is still running at that point.
+  const jobId = job?.id ?? null;
+  useEffect(() => {
+    jobIdRef.current = jobId;
+    if (!jobId) return;
+    let stopped = false;
+    let failures = 0;
+    let timer;
+    const fail = (message) => {
+      setError(message);
+      setJob(null);
+      setLoading(false);
+    };
+    const poll = async () => {
+      try {
+        const resp = await fetch(`/api/predict/jobs/${jobId}`, { cache: "no-store" });
+        const data = await resp.json().catch(() => ({}));
+        if (stopped) return;
+        if (resp.status === 404) return fail(data.detail || "This computation is no longer available. Please run it again.");
+        if (!resp.ok) throw new Error(data.detail || `Server error (HTTP ${resp.status})`);
+        failures = 0;
+        if (data.status === "done") {
+          setResults(mapResults(data.result));
+          setJob(null);
+          setLoading(false);
+          setView("results");
+          return;
+        }
+        if (data.status === "error") return fail(data.error || "Prediction failed. Please try again.");
+        setJob(j => (j && j.id === jobId ? { ...j, progress: data.progress, showProgress: true } : j));
+      } catch (e) {
+        if (stopped) return;
+        failures += 1;
+        if (failures >= 4) return fail("Lost contact with the server. Please try again.");
+      }
+      timer = setTimeout(poll, 1000);
+    };
+    timer = setTimeout(poll, 600);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [jobId]);
+
+  // Elapsed-time clock for the progress view
+  const showingProgress = !!job?.showProgress;
+  useEffect(() => {
+    if (!showingProgress) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [showingProgress]);
 
   // ── NAV ──
   function Nav({ landing }) {
@@ -545,7 +694,7 @@ export default function App() {
             <section className="rise">
               <h1 className="step-title">Medication History</h1>
               <p className="step-desc">
-                Enter current and recent medications. Type drug names, paste a list, or upload a medication record.
+                Enter current and recent medications. Type drug names, paste a list, or upload a medication record. Names outside the DualR table are estimated by a language model and can take a few minutes.
               </p>
 
               <div className="dropzone">
@@ -607,7 +756,16 @@ export default function App() {
           )}
 
           {/* ── STEP 4: Review ── */}
-          {step === 4 && (
+          {step === 4 && job?.showProgress && (
+            <ComputeProgress
+              progress={job.progress}
+              elapsedMs={now - job.startedAt}
+              nConditions={selectedPhenos.length}
+              onCancel={cancelJob}
+            />
+          )}
+
+          {step === 4 && !job?.showProgress && (
             <section className="rise">
               <h1 className="step-title">Review &amp; Compute</h1>
               <p className="step-desc">Verify your inputs before generating risk estimates.</p>
@@ -700,7 +858,7 @@ export default function App() {
             {skipped.map((d, i) => (
               <div className="wf-row skipped" key={i}>
                 <span className="wf-name" title={d.label}>{d.label}</span>
-                <div className="wf-track"><span className="wf-na">not recognized</span></div>
+                <div className="wf-track"><span className="wf-na">no estimate</span></div>
               </div>
             ))}
           </div>

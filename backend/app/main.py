@@ -20,7 +20,10 @@ import json
 import logging
 import os
 import re
+import time
+import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
@@ -68,26 +71,20 @@ CACHE_DIR = os.getenv("CACHE_DIR", "/tmp/dualr_cache")
 CATCHAT_BASE_URL = os.getenv("CATCHAT_BASE_URL", "")
 CATCHAT_MODEL = os.getenv("CATCHAT_MODEL", "")
 CATCHAT_API_KEY = os.getenv("CATCHAT_API_KEY", "")
-# Per-call timeout, total wall-clock budget per request (kept under nginx's 60 s
-# proxy timeout), and how many CatChat calls may run at once. gpt-oss reasons before
-# answering, so a single call can need most of the budget.
-CATCHAT_TIMEOUT = float(os.getenv("CATCHAT_TIMEOUT", "45"))
-CATCHAT_BUDGET = float(os.getenv("CATCHAT_BUDGET", "45"))
+# Per-call timeout. gpt-oss reasons before answering, so a CoT call can take minutes.
+CATCHAT_TIMEOUT = float(os.getenv("CATCHAT_TIMEOUT", "180"))
+# Total CatChat wall-clock budget per request. Background jobs (/api/predict/jobs)
+# report progress, so they can wait; the synchronous /api/predict must answer within
+# nginx's 60 s proxy timeout. Calls still running at the budget are cancelled.
+CATCHAT_JOB_BUDGET = float(os.getenv("CATCHAT_JOB_BUDGET", "600"))
+CATCHAT_SYNC_BUDGET = float(os.getenv("CATCHAT_SYNC_BUDGET", "45"))
 # Matches DEFAULT_MAX_TOKENS in the research code (dualr_oss.py); reasoning tokens
 # count toward this limit, so small values leave the final answer empty.
 CATCHAT_MAX_TOKENS = int(os.getenv("CATCHAT_MAX_TOKENS", "4096"))
 CATCHAT_CONCURRENCY = int(os.getenv("CATCHAT_CONCURRENCY", "12"))
 
-# NLM RxNav approximate match, used to keep non-medication text (food, chat, typos with
-# no close drug) away from CatChat. Real and misspelled drug names score about 8 or
-# more; unrelated text scores lower or returns no candidate.
-RXNAV_URL = os.getenv("RXNAV_URL", "https://rxnav.nlm.nih.gov/REST")
-RXNAV_MIN_SCORE = float(os.getenv("RXNAV_MIN_SCORE", "8"))
-RXNAV_TIMEOUT = float(os.getenv("RXNAV_TIMEOUT", "5"))
-# Entries RxNav cannot match (non-English names such as 维生素a, colloquial names) get one
-# more chance: CatChat is asked whether the text names a medication, vitamin or
-# supplement and, if so, for its English generic name, which is then used for scoring.
-CATCHAT_NORMALIZE_TIMEOUT = float(os.getenv("CATCHAT_NORMALIZE_TIMEOUT", "15"))
+# Finished jobs (and their results) are kept in memory this long, then dropped.
+JOB_TTL = float(os.getenv("JOB_TTL", "600"))
 
 # ═══════════════════════════════════════════
 # Global State
@@ -296,121 +293,36 @@ def predict_risk(bundle: dict, rows: pd.DataFrame) -> float:
     return p / (p + (1.0 - p) * w)
 
 
-async def normalize_entry(text: str, client: httpx.AsyncClient) -> str | None:
-    """
-    Ask CatChat whether free text names a medication, vitamin or supplement.
-    Returns its English generic name, or None when CatChat says it is not one or gives
-    no usable answer. An entry CatChat cannot name in time would not get scored in
-    time either, and passing it on lets CatChat assign arbitrary text a probability.
-    """
-    prompt = (
-        f"A patient typed this entry into a list of their medications: \"{text}\"\n"
-        "If it names a medication, vitamin or dietary supplement (in any language, "
-        "brand or generic), reply with its English generic name only. "
-        "If it is anything else, reply NONE."
-    )
-    headers = {"Content-Type": "application/json"}
-    if CATCHAT_API_KEY:
-        headers["Authorization"] = f"Bearer {CATCHAT_API_KEY}"
-    try:
-        resp = await client.post(
-            f"{CATCHAT_BASE_URL}/chat/completions",
-            headers=headers,
-            json={
-                "model": CATCHAT_MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 1024,
-                "temperature": 0.01,
-                **( {"reasoning_effort": "low"} if "oss" in CATCHAT_MODEL.lower() else {} ),
-            },
-        )
-        resp.raise_for_status()
-        content = (resp.json()["choices"][0].get("message") or {}).get("content") or ""
-        lines = content.strip().splitlines()
-        answer = lines[0].strip().strip("\"'.*`").strip() if lines else ""
-        if not answer:
-            logger.warning(f"CatChat gave no answer when normalising {text!r}; skipping it")
-            return None
-        if answer.upper().startswith("NONE"):
-            return None
-        return answer[:120]
-    except Exception as e:
-        logger.warning(f"CatChat normalisation failed for {text!r}; skipping it: {e}")
-        return None
+@dataclass
+class Progress:
+    """Work units for one prediction: the table lookup, one per CatChat call, one per disease model."""
+    total: int = 0
+    done: int = 0
+    stage: str = "queued"  # queued -> estimating -> modeling -> done
+    drugs: dict[str, list[int]] = field(default_factory=dict)  # drug -> [done, total] calls
 
+    def tick(self, drug: str | None = None):
+        self.done = min(self.done + 1, self.total)
+        if drug in self.drugs:
+            self.drugs[drug][0] += 1
 
-async def screen_entries(names: set[str], timeout: float) -> tuple[set[str], dict[str, str]]:
-    """
-    Decide which novel entries are medications and what text to send to CatChat.
-
-    1. RxNav approximate match with score >= RXNAV_MIN_SCORE: a medication, queried
-       as typed. If RxNav cannot be reached the entry is also kept as typed.
-    2. Otherwise CatChat is asked for an English generic name (normalize_entry). NONE,
-       no usable answer or no answer within `timeout` marks it as not a medication.
-
-    Returns (non_medications, entry -> text to query CatChat with).
-    """
-    if not names:
-        return set(), {}
-
-    async with httpx.AsyncClient(timeout=RXNAV_TIMEOUT) as client:
-        async def rxnav_match(name: str) -> bool:
-            try:
-                resp = await client.get(
-                    f"{RXNAV_URL}/approximateTerm.json",
-                    params={"term": name, "maxEntries": 1, "option": 1},
-                )
-                resp.raise_for_status()
-                candidates = resp.json().get("approximateGroup", {}).get("candidate", [])
-                score = float(candidates[0].get("score", 0)) if candidates else 0.0
-                return score >= RXNAV_MIN_SCORE
-            except Exception as e:
-                logger.warning(f"RxNav check failed for {name!r}; treating as a drug: {e}")
-                return True
-
-        ordered = sorted(names)
-        matched = await asyncio.gather(*(rxnav_match(n) for n in ordered))
-
-    query_text = {n: n for n, ok in zip(ordered, matched) if ok}
-    unmatched = [n for n, ok in zip(ordered, matched) if not ok]
-    non_drugs: set[str] = set()
-
-    if unmatched and not (CATCHAT_BASE_URL and CATCHAT_MODEL):
-        non_drugs.update(unmatched)
-    elif unmatched:
-        async with httpx.AsyncClient(timeout=CATCHAT_NORMALIZE_TIMEOUT) as client:
-            tasks = {n: asyncio.create_task(normalize_entry(n, client)) for n in unmatched}
-            done, pending = await asyncio.wait(tasks.values(), timeout=timeout)
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-        for name, task in tasks.items():
-            if task in done:
-                english = task.result()
-                if english is None:
-                    non_drugs.add(name)
-                else:
-                    query_text[name] = english
-            else:
-                logger.warning(f"CatChat normalisation timed out for {name!r}; skipping it")
-                non_drugs.add(name)
-        renamed = {n: t for n, t in query_text.items() if n in tasks and t != n}
-        if renamed:
-            logger.info(f"Normalised by CatChat: {renamed}")
-
-    if non_drugs:
-        logger.info(f"Not sent to CatChat (not a medication): {sorted(non_drugs)}")
-    return non_drugs, query_text
+    def as_dict(self) -> dict:
+        return {
+            "total": self.total,
+            "done": self.done,
+            "stage": self.stage,
+            "drugs": [{"name": n, "done": d, "total": t} for n, (d, t) in self.drugs.items()],
+        }
 
 
 async def score_novel_drugs(
-    novel: dict[str, list[str]], query_text: dict[str, str], budget: float
+    novel: dict[str, list[str]], budget: float, progress: Progress
 ) -> dict[str, list[str]]:
     """
     Query CatChat concurrently for every (disease, drug, mode) absent from the lookup
-    tables and add the results to drug_probs, asking about query_text[drug] (an English
-    name when the entry was normalised). Calls still running after `budget` seconds
-    are cancelled; their drugs are skipped like any unparseable response.
+    tables and add the results to drug_probs. Calls still running after `budget`
+    seconds are cancelled; their drugs are skipped like any unparseable response.
+    Each finished or cancelled call advances `progress`.
     Returns disease -> drugs that received no probability in either mode.
     """
     jobs = [
@@ -426,17 +338,31 @@ async def score_novel_drugs(
 
     async with httpx.AsyncClient(timeout=CATCHAT_TIMEOUT) as client:
         async def run(job):
-            disease, drug, use_cot, _ = job
+            disease, drug, use_cot, mode = job
             async with sem:
-                return job, await query_catchat(query_text.get(drug, drug), disease, use_cot, client)
+                t0 = time.monotonic()
+                p = await query_catchat(drug, disease, use_cot, client)
+                logger.info(
+                    f"CatChat {mode} {disease} {drug!r}: {time.monotonic() - t0:.1f}s, "
+                    f"{'probability' if p is not None else 'no probability'}"
+                )
+            progress.tick(drug)
+            return job, p
 
-        tasks = [asyncio.create_task(run(job)) for job in jobs]
-        done, pending = await asyncio.wait(tasks, timeout=budget)
-        if pending:
-            logger.warning(f"CatChat budget of {budget:.0f}s exceeded; cancelling {len(pending)} of {len(jobs)} calls")
-            for task in pending:
+        task_jobs = {asyncio.create_task(run(job)): job for job in jobs}
+        tasks = list(task_jobs)
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=budget)
+        finally:
+            # On budget expiry, and also when the whole job is cancelled, stop the calls.
+            unfinished = [t for t in tasks if not t.done()]
+            for task in unfinished:
                 task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.gather(*unfinished, return_exceptions=True)
+        if pending:
+            logger.warning(f"CatChat budget of {budget:.0f}s exceeded; cancelled {len(pending)} of {len(jobs)} calls")
+            for task in pending:
+                progress.tick(task_jobs[task][1])
 
     scored = set()
     for task in done:
@@ -479,32 +405,34 @@ async def api_health():
     return {"status": "ok", "models_loaded": list(bundles.keys())}
 
 
-@app.post("/api/predict", response_model=PredictResponse)
-async def predict(req: PredictRequest):
+def validate(req: PredictRequest) -> None:
+    """Reject bad input before any work starts (also before a background job is created)."""
+    for disease in req.diseases:
+        if disease not in PREVALENCES:
+            raise HTTPException(400, f"Unknown disease: {disease}")
+        if disease not in bundles:
+            raise HTTPException(503, f"Model not loaded for disease: {disease}")
+    try:
+        age_val = int(req.demographics.get("age"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "demographics.age must be an integer")
+    if not (18 <= age_val <= 120):
+        raise HTTPException(400, f"demographics.age must be 18-120, got {age_val}")
+
+
+async def run_prediction(req: PredictRequest, budget: float, progress: Progress) -> dict:
+    """Score novel drugs with CatChat (within `budget` seconds), then run each disease model."""
     results = {}
 
-    # Drugs absent from each disease's lookup table (capped at 10 per disease). Entries
-    # that are not medications (screen_entries) are skipped; the rest are scored with
-    # CatChat for all diseases at once before the per-disease loop.
+    # Drugs absent from each disease's lookup table (capped at 10 per disease) are scored
+    # with CatChat as typed, for all diseases at once before the per-disease loop.
     novel_by_disease = {
         disease: [d for d in req.drugs if d.strip() not in drug_probs.get(disease, {})]
         for disease in req.diseases
-        if disease in PREVALENCES and disease in bundles
     }
     to_query = {
         disease: list(dict.fromkeys(d.strip() for d in drugs))[:10]
         for disease, drugs in novel_by_disease.items()
-    }
-    # One deadline covers screening and scoring so the request stays under the gateway timeout.
-    started = asyncio.get_running_loop().time()
-    non_drugs, query_text = await screen_entries(
-        {d for drugs in to_query.values() for d in drugs},
-        timeout=min(CATCHAT_NORMALIZE_TIMEOUT, CATCHAT_BUDGET / 3),
-    )
-    candidates = to_query
-    to_query = {
-        disease: [d for d in drugs if d not in non_drugs]
-        for disease, drugs in candidates.items()
     }
     if any(to_query.values()) and (not CATCHAT_BASE_URL or not CATCHAT_MODEL):
         first = next(d for drugs in to_query.values() for d in drugs)
@@ -513,30 +441,23 @@ async def predict(req: PredictRequest):
             f"Novel drug scoring failed for '{first}': CatChat not configured "
             f"(CATCHAT_BASE_URL={CATCHAT_BASE_URL!r}, CATCHAT_MODEL={CATCHAT_MODEL!r})"
         )
-    remaining = CATCHAT_BUDGET - (asyncio.get_running_loop().time() - started)
-    no_probability = await score_novel_drugs(to_query, query_text, budget=max(remaining, 5.0))
-    skipped_by_disease = {
-        disease: [d for d in drugs if d in non_drugs or d in no_probability[disease]]
-        for disease, drugs in candidates.items()
-    }
+
+    for drugs in to_query.values():
+        for drug in drugs:
+            progress.drugs.setdefault(drug, [0, 0])[1] += 2  # noCoT + CoT
+    progress.total = 1 + sum(t for _, t in progress.drugs.values()) + len(req.diseases)
+    progress.done = 1  # table lookup above
+    progress.stage = "estimating"
+    skipped_by_disease = await score_novel_drugs(to_query, budget, progress)
+    progress.stage = "modeling"
 
     for disease in req.diseases:
-        if disease not in PREVALENCES:
-            raise HTTPException(400, f"Unknown disease: {disease}")
-        if disease not in bundles:
-            raise HTTPException(503, f"Model not loaded for disease: {disease}")
-
         prevalence = PREVALENCES[disease]
         bundle = bundles[disease]
         feature_names = bundle.get("features", [])
 
-        # 1. Validate and encode demographics
-        try:
-            age_val = int(req.demographics.get("age"))
-        except (TypeError, ValueError):
-            raise HTTPException(400, "demographics.age must be an integer")
-        if not (18 <= age_val <= 120):
-            raise HTTPException(400, f"demographics.age must be 18–120, got {age_val}")
+        # 1. Encode demographics (validated in validate())
+        age_val = int(req.demographics.get("age"))
         gender_val = GENDER_MAP.get(req.demographics.get("gender", "Man"), 0)
         race_val = RACE_MAP.get(req.demographics.get("race", "White"), 0)
         eth_val = ETHNICITY_MAP.get(req.demographics.get("ethnicity", "Others"), 0)
@@ -643,8 +564,94 @@ async def predict(req: PredictRequest):
             "n_skipped_drugs": len(skipped_drugs),
             "skipped_drugs": skipped_drugs,
         }
+        progress.tick()
 
-    return PredictResponse(results=results)
+    progress.stage = "done"
+    return {"results": results}
+
+
+@app.post("/api/predict", response_model=PredictResponse)
+async def predict(req: PredictRequest):
+    """Synchronous prediction, capped at CATCHAT_SYNC_BUDGET to stay under the proxy timeout."""
+    validate(req)
+    return await run_prediction(req, CATCHAT_SYNC_BUDGET, Progress())
+
+
+# ═══════════════════════════════════════════
+# Background jobs: start a prediction, poll its progress, fetch the result
+# ═══════════════════════════════════════════
+
+@dataclass
+class Job:
+    progress: Progress
+    started: float
+    task: asyncio.Task | None = None
+    status: str = "running"  # running | done | error
+    finished: float | None = None
+    result: dict | None = None
+    error: str | None = None
+
+
+jobs: dict[str, Job] = {}
+
+
+def _purge_jobs() -> None:
+    """Drop finished jobs after JOB_TTL, and cancel any job that has run far too long."""
+    now = time.monotonic()
+    for job_id, job in list(jobs.items()):
+        expired = job.finished is not None and now - job.finished > JOB_TTL
+        stuck = job.finished is None and now - job.started > CATCHAT_JOB_BUDGET + JOB_TTL
+        if expired or stuck:
+            if job.task and not job.task.done():
+                job.task.cancel()
+            del jobs[job_id]
+
+
+@app.post("/api/predict/jobs", status_code=202)
+async def create_job(req: PredictRequest):
+    _purge_jobs()
+    validate(req)
+    job_id = uuid.uuid4().hex
+    job = Job(progress=Progress(), started=time.monotonic())
+    jobs[job_id] = job
+
+    async def runner():
+        try:
+            job.result = await run_prediction(req, CATCHAT_JOB_BUDGET, job.progress)
+            job.status = "done"
+        except asyncio.CancelledError:
+            raise
+        except HTTPException as e:
+            job.status, job.error = "error", str(e.detail)
+        except Exception:
+            logger.exception(f"Prediction job {job_id} failed")
+            job.status, job.error = "error", "Prediction failed. Please try again."
+        finally:
+            job.finished = time.monotonic()
+
+    job.task = asyncio.create_task(runner())
+    return {"job_id": job_id, "status": job.status, "progress": job.progress.as_dict()}
+
+
+@app.get("/api/predict/jobs/{job_id}")
+async def get_job(job_id: str):
+    _purge_jobs()
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(404, "This computation is no longer available. Please run it again.")
+    body = {"job_id": job_id, "status": job.status, "progress": job.progress.as_dict()}
+    if job.status == "done":
+        body["result"] = job.result
+    elif job.status == "error":
+        body["error"] = job.error
+    return body
+
+
+@app.delete("/api/predict/jobs/{job_id}", status_code=204)
+async def cancel_job(job_id: str):
+    job = jobs.pop(job_id, None)
+    if job and job.task and not job.task.done():
+        job.task.cancel()
 
 
 if __name__ == "__main__":

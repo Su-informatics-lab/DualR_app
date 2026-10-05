@@ -434,6 +434,71 @@ button:disabled { cursor: not-allowed; }
 .error { margin-top: 12px; background: var(--error-bg); border: 1px solid var(--error-line); color: var(--error-ink); }
 .notice svg, .error svg { flex-shrink: 0; margin-top: 2px; }
 
+/* Computation progress */
+.compute { padding: 28px 28px 24px; }
+.compute-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+.compute-pct {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 48px; line-height: 1; font-weight: 600; letter-spacing: -0.04em;
+}
+.compute-pct small { font-size: 0.45em; color: var(--muted); font-weight: 500; margin-left: 2px; }
+.compute-time { font-size: 13px; color: var(--muted); }
+.compute-time .mono { color: var(--ink-2); }
+
+.compute-bar {
+  position: relative; height: 10px; margin-top: 18px;
+  border-radius: 5px; background: var(--surface-2); overflow: hidden;
+}
+.compute-fill {
+  position: absolute; inset: 0 auto 0 0; border-radius: 5px;
+  background: var(--accent);
+  transition: width 0.8s var(--ease);
+  overflow: hidden;
+}
+/* A slow highlight travels along the filled part so the bar reads as live between updates. */
+.compute-fill::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.35) 50%, transparent 100%);
+  transform: translateX(-100%);
+  animation: sheen 1.8s ease-in-out infinite;
+}
+@keyframes sheen { to { transform: translateX(100%); } }
+
+.cstep-list { list-style: none; margin-top: 26px; display: grid; gap: 14px; }
+.cstep { display: grid; grid-template-columns: 20px 1fr auto; align-items: center; gap: 12px; font-size: 14.5px; }
+.cstep-mark {
+  width: 20px; height: 20px; border-radius: 50%;
+  display: grid; place-items: center;
+  border: 1.5px solid var(--line-strong); color: var(--on-accent);
+  transition: background-color 0.3s var(--ease), border-color 0.3s var(--ease);
+}
+.cstep.pending { color: var(--muted); }
+.cstep.active .cstep-mark { border-color: var(--accent); position: relative; }
+.cstep.active .cstep-mark::after {
+  content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { transform: scale(0.7); opacity: 0.55; } 50% { transform: scale(1); opacity: 1; } }
+.cstep.done .cstep-mark { background: var(--accent); border-color: var(--accent); }
+.cstep.done .cstep-label { color: var(--ink-2); }
+.cstep.active .cstep-label { font-weight: 550; }
+.cstep-detail { font-size: 12.5px; color: var(--muted); }
+
+.cdrug-list {
+  list-style: none; margin: 18px 0 0 32px; padding: 14px 16px;
+  border-radius: var(--r-panel); background: var(--surface-2);
+  display: grid; gap: 10px;
+}
+.cdrug-list li { display: grid; grid-template-columns: minmax(0, 1fr) 120px 40px; align-items: center; gap: 14px; }
+.cdrug-name {
+  font-family: var(--font-mono); font-size: 12.5px; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cdrug-bar { position: relative; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.cdrug-bar span { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 2px; transition: width 0.6s var(--ease); }
+.cdrug-count { font-size: 12px; color: var(--muted); text-align: right; }
+.cdrug-list li.complete .cdrug-count { color: var(--ink-2); }
+
 /* ── Results ── */
 .results { max-width: 900px; margin: 0 auto; padding: 48px 32px 72px; }
 .status-line { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 550; color: var(--risk-low); }
@@ -570,6 +635,12 @@ button:disabled { cursor: not-allowed; }
   .actions.end .btn-primary { width: 100%; }
 
   .review-row { grid-template-columns: 1fr; gap: 4px; padding: 14px 16px; }
+  .compute { padding: 22px 18px 20px; }
+  .compute-pct { font-size: 40px; }
+  .cdrug-list { margin-left: 0; }
+  .cstep { grid-template-columns: 20px 1fr; row-gap: 2px; }
+  .cstep-detail { grid-column: 2; }
+  .cdrug-list li { grid-template-columns: minmax(0, 1fr) 64px 36px; gap: 10px; }
 
   .results { padding: 32px 16px 56px; }
   .results-title { font-size: 30px; }
