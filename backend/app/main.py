@@ -273,6 +273,22 @@ async def query_catchat(
         return None
 
 
+def predict_risk(bundle: dict, rows: pd.DataFrame) -> float:
+    """
+    Probability of the disease for one feature row, on the cohort's prevalence scale.
+
+    The AoU models were trained with scale_pos_weight = N_neg / N_pos (equal to
+    (1 - prevalence) / prevalence, as the full cohort was used), which inflates
+    predict_proba toward 0.5. Undo the class weighting with the prior-shift
+    correction p / (p + (1 - p) * w), w = scale_pos_weight. This removes the
+    reweighting only; it is not a fitted calibration, and ranking (AUC) is unchanged.
+    """
+    pipe = bundle["pipeline"]
+    p = float(pipe.predict_proba(rows)[0][1])
+    w = pipe[-1].get_params().get("scale_pos_weight") or 1.0
+    return p / (p + (1.0 - p) * w)
+
+
 async def find_non_drugs(names: set[str]) -> set[str]:
     """
     Return the names RxNav does not match to any medication concept with
@@ -462,27 +478,26 @@ async def predict(req: PredictRequest):
 
         # 5. Predict using the pipeline in the bundle
         row = pd.DataFrame([{k: feature_dict.get(k, 0) for k in feature_names}])
-        risk = float(bundle["pipeline"].predict_proba(row)[0][1])
+        risk = predict_risk(bundle, row)
 
         # 5a. Component contributions (marginal effects vs. all-zero baseline)
-        pipe = bundle["pipeline"]
         dualr_cols = {"dualr_no_cot", "dualr_nocot", "dualr_cot"}
         demo_cols   = {"age", "gender", "race", "ethnicity"}
 
         neutral_row   = pd.DataFrame([{k: 0 for k in feature_names}])
-        baseline_risk = float(pipe.predict_proba(neutral_row)[0][1])
+        baseline_risk = predict_risk(bundle, neutral_row)
 
         drug_only_row = neutral_row.copy()
         for col in feature_names:
             if col in dualr_cols:
                 drug_only_row[col] = row[col].values[0]
-        drug_risk = float(pipe.predict_proba(drug_only_row)[0][1])
+        drug_risk = predict_risk(bundle, drug_only_row)
 
         demo_only_row = neutral_row.copy()
         for col in feature_names:
             if col in demo_cols:
                 demo_only_row[col] = row[col].values[0]
-        demo_risk = float(pipe.predict_proba(demo_only_row)[0][1])
+        demo_risk = predict_risk(bundle, demo_only_row)
 
         components = {
             "baseline":    round(baseline_risk, 4),
