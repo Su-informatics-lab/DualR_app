@@ -84,6 +84,10 @@ CATCHAT_CONCURRENCY = int(os.getenv("CATCHAT_CONCURRENCY", "12"))
 RXNAV_URL = os.getenv("RXNAV_URL", "https://rxnav.nlm.nih.gov/REST")
 RXNAV_MIN_SCORE = float(os.getenv("RXNAV_MIN_SCORE", "8"))
 RXNAV_TIMEOUT = float(os.getenv("RXNAV_TIMEOUT", "5"))
+# Entries RxNav cannot match (non-English names such as 维生素a, colloquial names) get one
+# more chance: CatChat is asked whether the text names a medication, vitamin or
+# supplement and, if so, for its English generic name, which is then used for scoring.
+CATCHAT_NORMALIZE_TIMEOUT = float(os.getenv("CATCHAT_NORMALIZE_TIMEOUT", "15"))
 
 # ═══════════════════════════════════════════
 # Global State
@@ -292,17 +296,64 @@ def predict_risk(bundle: dict, rows: pd.DataFrame) -> float:
     return p / (p + (1.0 - p) * w)
 
 
-async def find_non_drugs(names: set[str]) -> set[str]:
+async def normalize_entry(text: str, client: httpx.AsyncClient) -> str | None:
     """
-    Return the names RxNav does not match to any medication concept with
-    score >= RXNAV_MIN_SCORE. If RxNav cannot be reached, a name is kept
-    (treated as a possible drug) so an outage never drops real medications.
+    Ask CatChat whether free text names a medication, vitamin or supplement.
+    Returns its English generic name, or None when CatChat says it is not one.
+    On any failure the original text is returned, so the entry is kept.
+    """
+    prompt = (
+        f"A patient typed this entry into a list of their medications: \"{text}\"\n"
+        "If it names a medication, vitamin or dietary supplement (in any language, "
+        "brand or generic), reply with its English generic name only. "
+        "If it is anything else, reply NONE."
+    )
+    headers = {"Content-Type": "application/json"}
+    if CATCHAT_API_KEY:
+        headers["Authorization"] = f"Bearer {CATCHAT_API_KEY}"
+    try:
+        resp = await client.post(
+            f"{CATCHAT_BASE_URL}/chat/completions",
+            headers=headers,
+            json={
+                "model": CATCHAT_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1024,
+                "temperature": 0.01,
+                **( {"reasoning_effort": "low"} if "oss" in CATCHAT_MODEL.lower() else {} ),
+            },
+        )
+        resp.raise_for_status()
+        content = (resp.json()["choices"][0].get("message") or {}).get("content") or ""
+        lines = content.strip().splitlines()
+        answer = lines[0].strip().strip("\"'.*`").strip() if lines else ""
+        if not answer:
+            logger.warning(f"CatChat gave no answer when normalising {text!r}; keeping it")
+            return text
+        if answer.upper().startswith("NONE"):
+            return None
+        return answer[:120]
+    except Exception as e:
+        logger.warning(f"CatChat normalisation failed for {text!r}; keeping it: {e}")
+        return text
+
+
+async def screen_entries(names: set[str], timeout: float) -> tuple[set[str], dict[str, str]]:
+    """
+    Decide which novel entries are medications and what text to send to CatChat.
+
+    1. RxNav approximate match with score >= RXNAV_MIN_SCORE: a medication, queried
+       as typed. If RxNav cannot be reached the entry is also kept as typed.
+    2. Otherwise CatChat is asked for an English generic name (normalize_entry);
+       NONE marks the entry as not a medication.
+
+    Returns (non_medications, entry -> text to query CatChat with).
     """
     if not names:
-        return set()
+        return set(), {}
 
     async with httpx.AsyncClient(timeout=RXNAV_TIMEOUT) as client:
-        async def check(name: str) -> bool:
+        async def rxnav_match(name: str) -> bool:
             try:
                 resp = await client.get(
                     f"{RXNAV_URL}/approximateTerm.json",
@@ -311,24 +362,53 @@ async def find_non_drugs(names: set[str]) -> set[str]:
                 resp.raise_for_status()
                 candidates = resp.json().get("approximateGroup", {}).get("candidate", [])
                 score = float(candidates[0].get("score", 0)) if candidates else 0.0
-                return score < RXNAV_MIN_SCORE
+                return score >= RXNAV_MIN_SCORE
             except Exception as e:
                 logger.warning(f"RxNav check failed for {name!r}; treating as a drug: {e}")
-                return False
+                return True
 
         ordered = sorted(names)
-        flags = await asyncio.gather(*(check(n) for n in ordered))
-    non_drugs = {n for n, flag in zip(ordered, flags) if flag}
+        matched = await asyncio.gather(*(rxnav_match(n) for n in ordered))
+
+    query_text = {n: n for n, ok in zip(ordered, matched) if ok}
+    unmatched = [n for n, ok in zip(ordered, matched) if not ok]
+    non_drugs: set[str] = set()
+
+    if unmatched and not (CATCHAT_BASE_URL and CATCHAT_MODEL):
+        non_drugs.update(unmatched)
+    elif unmatched:
+        async with httpx.AsyncClient(timeout=CATCHAT_NORMALIZE_TIMEOUT) as client:
+            tasks = {n: asyncio.create_task(normalize_entry(n, client)) for n in unmatched}
+            done, pending = await asyncio.wait(tasks.values(), timeout=timeout)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        for name, task in tasks.items():
+            if task in done:
+                english = task.result()
+                if english is None:
+                    non_drugs.add(name)
+                else:
+                    query_text[name] = english
+            else:
+                query_text[name] = name  # timed out: keep the entry as typed
+        renamed = {n: t for n, t in query_text.items() if n in tasks and t != n}
+        if renamed:
+            logger.info(f"Normalised by CatChat: {renamed}")
+
     if non_drugs:
-        logger.info(f"Not sent to CatChat (no RxNav match): {sorted(non_drugs)}")
-    return non_drugs
+        logger.info(f"Not sent to CatChat (not a medication): {sorted(non_drugs)}")
+    return non_drugs, query_text
 
 
-async def score_novel_drugs(novel: dict[str, list[str]]) -> dict[str, list[str]]:
+async def score_novel_drugs(
+    novel: dict[str, list[str]], query_text: dict[str, str], budget: float
+) -> dict[str, list[str]]:
     """
     Query CatChat concurrently for every (disease, drug, mode) absent from the lookup
-    tables and add the results to drug_probs. Calls still running when CATCHAT_BUDGET
-    expires are cancelled; their drugs are skipped like any unparseable response.
+    tables and add the results to drug_probs, asking about query_text[drug] (an English
+    name when the entry was normalised). Calls still running after `budget` seconds
+    are cancelled; their drugs are skipped like any unparseable response.
     Returns disease -> drugs that received no probability in either mode.
     """
     jobs = [
@@ -346,12 +426,12 @@ async def score_novel_drugs(novel: dict[str, list[str]]) -> dict[str, list[str]]
         async def run(job):
             disease, drug, use_cot, _ = job
             async with sem:
-                return job, await query_catchat(drug, disease, use_cot, client)
+                return job, await query_catchat(query_text.get(drug, drug), disease, use_cot, client)
 
         tasks = [asyncio.create_task(run(job)) for job in jobs]
-        done, pending = await asyncio.wait(tasks, timeout=CATCHAT_BUDGET)
+        done, pending = await asyncio.wait(tasks, timeout=budget)
         if pending:
-            logger.warning(f"CatChat budget of {CATCHAT_BUDGET}s exceeded; cancelling {len(pending)} of {len(jobs)} calls")
+            logger.warning(f"CatChat budget of {budget:.0f}s exceeded; cancelling {len(pending)} of {len(jobs)} calls")
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
@@ -401,8 +481,8 @@ async def api_health():
 async def predict(req: PredictRequest):
     results = {}
 
-    # Drugs absent from each disease's lookup table (capped at 10 per disease). Text that
-    # RxNav does not recognise as a medication is skipped; the rest is scored with
+    # Drugs absent from each disease's lookup table (capped at 10 per disease). Entries
+    # that are not medications (screen_entries) are skipped; the rest are scored with
     # CatChat for all diseases at once before the per-disease loop.
     novel_by_disease = {
         disease: [d for d in req.drugs if d.strip() not in drug_probs.get(disease, {})]
@@ -413,7 +493,12 @@ async def predict(req: PredictRequest):
         disease: list(dict.fromkeys(d.strip() for d in drugs))[:10]
         for disease, drugs in novel_by_disease.items()
     }
-    non_drugs = await find_non_drugs({d for drugs in to_query.values() for d in drugs})
+    # One deadline covers screening and scoring so the request stays under the gateway timeout.
+    started = asyncio.get_running_loop().time()
+    non_drugs, query_text = await screen_entries(
+        {d for drugs in to_query.values() for d in drugs},
+        timeout=min(CATCHAT_NORMALIZE_TIMEOUT, CATCHAT_BUDGET / 3),
+    )
     candidates = to_query
     to_query = {
         disease: [d for d in drugs if d not in non_drugs]
@@ -426,7 +511,8 @@ async def predict(req: PredictRequest):
             f"Novel drug scoring failed for '{first}': CatChat not configured "
             f"(CATCHAT_BASE_URL={CATCHAT_BASE_URL!r}, CATCHAT_MODEL={CATCHAT_MODEL!r})"
         )
-    no_probability = await score_novel_drugs(to_query)
+    remaining = CATCHAT_BUDGET - (asyncio.get_running_loop().time() - started)
+    no_probability = await score_novel_drugs(to_query, query_text, budget=max(remaining, 5.0))
     skipped_by_disease = {
         disease: [d for d in drugs if d in non_drugs or d in no_probability[disease]]
         for disease, drugs in candidates.items()
