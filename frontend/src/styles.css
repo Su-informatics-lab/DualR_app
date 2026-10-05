@@ -488,10 +488,11 @@ button:disabled { cursor: not-allowed; }
 .waterfall-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .waterfall-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .wf { display: grid; gap: 6px; }
-.wf-row { display: grid; grid-template-columns: 160px minmax(0, 1fr); align-items: center; gap: 14px; }
+.wf-row { display: grid; grid-template-columns: 240px minmax(0, 1fr); align-items: center; gap: 14px; }
 .wf-name {
-  font-family: var(--font-mono); font-size: 12.5px; text-align: right; color: var(--ink);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.35; text-align: right; color: var(--ink);
+  overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
 }
 .wf-track { position: relative; height: 26px; }
 .wf-track::before { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; border-left: 1px solid var(--line-strong); }

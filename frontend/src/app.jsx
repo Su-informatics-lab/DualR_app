@@ -334,7 +334,7 @@ export default function App() {
           components: r.components || null,
           n_skipped_drugs: r.n_skipped_drugs || 0,
           topDrugs: r.top_drugs.map(d => ({
-            shortName: d.short_name,
+            label: d.name || d.short_name,
             contribution: d.contribution_combined,
             isSkipped: d.is_skipped,
           })),
@@ -682,8 +682,8 @@ export default function App() {
           const side = isPos ? "left" : "right";
           return (
             <div className="wf-row" key={i}>
-              <span className="wf-name" title={d.shortName}>{d.shortName}</span>
-              <div className="wf-track" role="img" aria-label={`${d.shortName}: ${fmtSigned(val, 2)}`}>
+              <span className="wf-name" title={d.label}>{d.label}</span>
+              <div className="wf-track" role="img" aria-label={`${d.label}: ${fmtSigned(val, 2)}`}>
                 <div className="wf-bar" style={{
                   [side]: "50%", width: `max(${w}%, 2px)`,
                   background: isPos ? "var(--mark-up)" : "var(--mark-down)",
@@ -699,7 +699,7 @@ export default function App() {
           <div className="wf-skipped">
             {skipped.map((d, i) => (
               <div className="wf-row skipped" key={i}>
-                <span className="wf-name" title={d.shortName}>{d.shortName}</span>
+                <span className="wf-name" title={d.label}>{d.label}</span>
                 <div className="wf-track"><span className="wf-na">not recognized</span></div>
               </div>
             ))}
