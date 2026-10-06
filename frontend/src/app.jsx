@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { ArrowLeft, ArrowRight, Check, CheckCircle, FileArrowUp, Plus, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { ArrowLeft, ArrowRight, Check, CheckCircle, Plus, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import MedicationImport from "./MedicationImport.jsx";
+import { splitPastedList } from "./extract.js";
 
 /*
  * DualR Clinical Risk Assessment Platform
@@ -301,6 +303,7 @@ export default function App() {
   const [job, setJob] = useState(null);
   const [now, setNow] = useState(() => Date.now());
   const jobIdRef = useRef(null);
+  const importRef = useRef(null);
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -376,6 +379,17 @@ export default function App() {
       setChatMsgs(newMsgs);
       setTimeout(() => setStep(3), 1000);
     }
+  }
+
+  function addDrugs(list) {
+    setDrugs(prev => {
+      const next = [...prev];
+      for (const d of list) {
+        const trimmed = d.trim();
+        if (trimmed && !next.includes(trimmed)) next.push(trimmed);
+      }
+      return next;
+    });
   }
 
   function addDrug(d) {
@@ -697,18 +711,20 @@ export default function App() {
                 Enter current and recent medications. Type drug names, paste a list, or upload a medication record. Names outside the DualR table are estimated by a language model and can take a few minutes.
               </p>
 
-              <div className="dropzone">
-                <span className="dropzone-icon"><FileArrowUp size={20} aria-hidden="true" /></span>
-                <span>
-                  <span className="dropzone-title" style={{ display: "block" }}>Drop medication record here</span>
-                  <span className="dropzone-sub" style={{ display: "block" }}>PDF, PNG, JPG, or plain text</span>
-                </span>
-              </div>
+              <MedicationImport ref={importRef} existing={drugs} onAdd={addDrugs} />
 
               <div className="field">
                 <label htmlFor="drug">Add a medication</label>
                 <div className="add-row">
                   <input id="drug" className="input" value={drugInput} onChange={e => setDrugInput(e.target.value)}
+                    onPaste={e => {
+                      // A pasted list (several lines or semicolons) goes to the review panel.
+                      const items = splitPastedList(e.clipboardData.getData("text"));
+                      if (items.length > 1) {
+                        e.preventDefault();
+                        importRef.current?.reviewPasted(items);
+                      }
+                    }}
                     onKeyDown={e => {
                       // Enter that confirms an IME composition (e.g. pinyin) must not add the
                       // entry; Safari reports it as keyCode 229 instead of isComposing.

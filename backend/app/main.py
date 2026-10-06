@@ -83,6 +83,10 @@ CATCHAT_SYNC_BUDGET = float(os.getenv("CATCHAT_SYNC_BUDGET", "45"))
 CATCHAT_MAX_TOKENS = int(os.getenv("CATCHAT_MAX_TOKENS", "4096"))
 CATCHAT_CONCURRENCY = int(os.getenv("CATCHAT_CONCURRENCY", "12"))
 
+# Timeout for pulling medication names out of uploaded-document text (one CatChat call,
+# answered synchronously, so it must stay under nginx's 60 s proxy timeout).
+CATCHAT_EXTRACT_TIMEOUT = float(os.getenv("CATCHAT_EXTRACT_TIMEOUT", "50"))
+
 # Finished jobs (and their results) are kept in memory this long, then dropped.
 JOB_TTL = float(os.getenv("JOB_TTL", "600"))
 
@@ -390,6 +394,9 @@ class PredictRequest(BaseModel):
 class PredictResponse(BaseModel):
     results: dict           # disease -> {risk, dualr_nocot, dualr_cot, top_drugs}
 
+class ExtractRequest(BaseModel):
+    text: str               # text read from a photo, PDF or text file in the browser
+
 
 # ═══════════════════════════════════════════
 # Endpoints
@@ -605,6 +612,64 @@ def _purge_jobs() -> None:
             if job.task and not job.task.done():
                 job.task.cancel()
             del jobs[job_id]
+
+
+EXTRACT_PROMPT = (
+    "Below is text read from a photo or document of a patient's medication list, "
+    "medication label or prescription. Text recognition errors are possible.\n"
+    "List every medication, vitamin or supplement it names, one per line, as written "
+    "(keep strength and form when present; fix obvious recognition misspellings). "
+    "Do not add anything that is not in the text and do not add commentary. "
+    "If there is none, reply NONE.\n\nText:\n\"\"\"\n{text}\n\"\"\""
+)
+_LIST_MARKER = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s*")
+
+
+@app.post("/api/extract-medications")
+async def extract_medications(req: ExtractRequest):
+    """
+    Ask CatChat which lines of document text name medications. The browser shows the
+    answer as suggestions for the user to confirm; nothing is added automatically.
+    On failure, "medications" is null and the browser falls back to the raw lines.
+    """
+    text = req.text.strip()[:8000]
+    if not text:
+        return {"medications": []}
+    if not CATCHAT_BASE_URL or not CATCHAT_MODEL:
+        return {"medications": None, "error": "Medication name detection is not configured."}
+
+    headers = {"Content-Type": "application/json"}
+    if CATCHAT_API_KEY:
+        headers["Authorization"] = f"Bearer {CATCHAT_API_KEY}"
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=CATCHAT_EXTRACT_TIMEOUT) as client:
+            resp = await client.post(
+                f"{CATCHAT_BASE_URL}/chat/completions",
+                headers=headers,
+                json={
+                    "model": CATCHAT_MODEL,
+                    "messages": [{"role": "user", "content": EXTRACT_PROMPT.format(text=text)}],
+                    "max_tokens": 2048,
+                    "temperature": 0.01,
+                    **( {"reasoning_effort": "low"} if "oss" in CATCHAT_MODEL.lower() else {} ),
+                },
+            )
+            resp.raise_for_status()
+            content = (resp.json()["choices"][0].get("message") or {}).get("content") or ""
+    except Exception as e:
+        logger.warning(f"Medication extraction failed after {time.monotonic() - t0:.1f}s: {e}")
+        return {"medications": None, "error": "Medication name detection did not respond in time."}
+
+    names: list[str] = []
+    for line in content.splitlines():
+        name = _LIST_MARKER.sub("", line).strip().strip("\"'`*").strip()
+        if not name or name.upper() == "NONE" or len(name) > 120:
+            continue
+        if name.lower() not in {n.lower() for n in names}:
+            names.append(name)
+    logger.info(f"Medication extraction: {len(names)} names in {time.monotonic() - t0:.1f}s")
+    return {"medications": names[:30]}
 
 
 @app.post("/api/predict/jobs", status_code=202)
