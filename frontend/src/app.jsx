@@ -751,9 +751,15 @@ export default function App() {
                 </div>
               )}
 
+              {drugs.length === 0 && (
+                <p className="field-hint" style={{ marginTop: 20 }}>
+                  No medications? You can continue. The estimate then rests on demographics and medical history only.
+                </p>
+              )}
+
               <div className="actions">
                 {backBtn(() => setStep(2))}
-                <button className="btn btn-primary" disabled={!drugs.length} onClick={() => { setError(null); setResults(null); setStep(4); }}>
+                <button className="btn btn-primary" onClick={() => { setError(null); setResults(null); setStep(4); }}>
                   Continue{nextIcon}
                 </button>
               </div>
@@ -795,7 +801,9 @@ export default function App() {
                 </div>
                 <div className="review-row">
                   <dt className="review-k">Medications <span className="mono">({drugs.length})</span></dt>
-                  <dd className="review-v mono"><ul>{drugs.map(d => <li key={d}>{d}</li>)}</ul></dd>
+                  <dd className={`review-v ${drugs.length ? "mono" : ""}`}>
+                    {drugs.length ? <ul>{drugs.map(d => <li key={d}>{d}</li>)}</ul> : "None entered"}
+                  </dd>
                 </div>
               </dl>
 
