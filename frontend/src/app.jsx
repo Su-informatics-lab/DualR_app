@@ -46,26 +46,27 @@ const DISEASE_COMO_MAP = {
   aud: ALL_CHARLSON, // full Charlson per ml.py
 };
 
+// AUROC: AoU phenotyping primary analysis (dualr_nm step 09b, config B; mean of 5 fold AUCs).
 const PHENOTYPES = {
   t2d: {
     id: "t2d", name: "Type 2 Diabetes Mellitus", abbr: "T2D",
     desc: "Metabolic disorder characterized by insulin resistance and hyperglycemia",
     prevalence: "10.9%",
-    auc: { base: 0.766, pdrs: 0.819, dualr: 0.851 },
-    n: "247,642",
+    auc: { base: 0.766, dualr: 0.860 },
+    n: "247,652",
   },
   htn: {
     id: "htn", name: "Hypertension", abbr: "HTN",
     desc: "Persistent elevation of systemic arterial blood pressure",
     prevalence: "33.0%",
-    auc: { base: 0.846, pdrs: 0.875, dualr: 0.886 },
+    auc: { base: 0.834, dualr: 0.878 },
     n: "254,487",
   },
   aud: {
     id: "aud", name: "Alcohol Use Disorder", abbr: "AUD",
     desc: "Impaired control over alcohol use, often underdocumented in clinical records",
     prevalence: "7.8%",
-    auc: { base: 0.798, pdrs: 0.834, dualr: 0.826 },
+    auc: { base: 0.763, dualr: 0.778 },
     n: "254,487",
   },
 };
@@ -110,7 +111,7 @@ function RiskGauge({ value, size = 140 }) {
   const arc = { strokeDasharray: `${dash} ${circ}` };
 
   return (
-    <div className="gauge" style={{ width: size, height: h }} role="img" aria-label={`${pct}% risk, ${label}`}>
+    <div className="gauge" style={{ width: size, height: h }} role="img" aria-label={`${pct}% probability, ${label}`}>
       <svg width={size} height={h} viewBox={`0 0 ${size} ${h}`}>
         <circle className="gauge-track" cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke}
           strokeLinecap="round" transform={`rotate(135 ${size / 2} ${size / 2})`} style={arc} />
@@ -185,7 +186,8 @@ function ValidationChart() {
                 <div className="db-bar" style={{ left: aucPos(lo), width: `calc(${aucPos(hi)} - ${aucPos(lo)})` }} />
                 <div className="db-dot base" style={{ left: aucPos(p.auc.base) }} title={`Baseline ${p.auc.base.toFixed(3)}`} />
                 <div className="db-dot dualr" style={{ left: aucPos(p.auc.dualr) }} title={`DualR ${p.auc.dualr.toFixed(3)}`} />
-                <span className="db-val" style={{ left: aucPos(p.auc.base) }}>{p.auc.base.toFixed(3)}</span>
+                {/* close values (e.g. AUD) would overlap above the line, so the baseline goes below */}
+                <span className={`db-val ${hi - lo < 0.03 ? "below" : ""}`} style={{ left: aucPos(p.auc.base) }}>{p.auc.base.toFixed(3)}</span>
                 <span className="db-val dualr" style={{ left: aucPos(p.auc.dualr) }}>{p.auc.dualr.toFixed(3)}</span>
               </div>
             </div>
@@ -225,12 +227,12 @@ function ComputeProgress({ progress, elapsedMs, nConditions, onCancel }) {
       detail: drugs.length ? `${llmDone} of ${llmTotal} estimates` : null,
       state: at > 1 ? "done" : at === 1 ? "active" : "pending",
     },
-    { key: "model", label: `Run the risk model for ${plural(nConditions, "condition")}`, state: at >= 3 ? "done" : at === 2 ? "active" : "pending" },
+    { key: "model", label: `Run the model for ${plural(nConditions, "condition")}`, state: at >= 3 ? "done" : at === 2 ? "active" : "pending" },
   ];
 
   return (
     <section className="rise">
-      <h1 className="step-title">Computing risk estimates</h1>
+      <h1 className="step-title">Computing estimates</h1>
       <p className="step-desc">
         Medications in the DualR table are scored instantly. The others are estimated by a large
         language model, twice per condition, which can take a few minutes. Keep this tab open.
@@ -536,7 +538,7 @@ export default function App() {
           <div>Licensed under Apache 2.0</div>
         </div>
         <div className="footer-legal">
-          This tool provides research-derived risk estimates and does not constitute clinical advice, diagnosis, or treatment recommendation. No personal data is collected, stored, or transmitted.
+          This tool provides research-derived estimates and does not constitute clinical advice, diagnosis, or treatment recommendation. No personal data is collected, stored, or transmitted.
         </div>
       </footer>
     );
@@ -561,7 +563,7 @@ export default function App() {
             <div>
               <h1 className="rise">Phenotypic risk from <em>medication history</em></h1>
               <p className="rise rise-1">
-                DualR turns medication records into disease risk estimates using knowledge from large language models, without sharing or storing patient data.
+                DualR estimates how likely a health record is to contain a diagnosis, from medication history and knowledge in large language models, without sharing or storing patient data.
               </p>
               <button className="btn btn-primary btn-lg rise rise-2" onClick={() => { setView("flow"); setStep(0); }}>
                 Start assessment{nextIcon}
@@ -572,8 +574,8 @@ export default function App() {
 
           <section className="facts rise rise-3" aria-label="About DualR">
             <div className="fact">
-              <div className="fact-big">16,000+</div>
-              <p>Drug associations pre-computed from large-scale cohorts: All of Us (N = 254K) and INPC (N = 1.13M).</p>
+              <div className="fact-big">15,980</div>
+              <p>Medication names with language-model estimates for each condition, built from the All of Us cohort (N = 254,487).</p>
             </div>
             <div className="fact">
               <div className="fact-big">Three conditions</div>
@@ -708,7 +710,7 @@ export default function App() {
             <section className="rise">
               <h1 className="step-title">Medication History</h1>
               <p className="step-desc">
-                Enter current and recent medications. Type drug names, paste a list, or upload a medication record. Names outside the DualR table are estimated by a language model and can take a few minutes.
+                Enter medications taken in the last 6 months. Type drug names, paste a list, or upload a medication record. Names outside the DualR table are estimated by a language model and can take a few minutes.
               </p>
 
               <MedicationImport ref={importRef} existing={drugs} onAdd={addDrugs} />
@@ -795,7 +797,7 @@ export default function App() {
           {step === 4 && !job?.showProgress && (
             <section className="rise">
               <h1 className="step-title">Review &amp; Compute</h1>
-              <p className="step-desc">Verify your inputs before generating risk estimates.</p>
+              <p className="step-desc">Verify your inputs before generating estimates.</p>
 
               <dl className="review">
                 <div className="review-row">
@@ -825,7 +827,7 @@ export default function App() {
 
               <div className="notice">
                 <Warning size={16} weight="bold" aria-hidden="true" />
-                <span>Risk estimates are derived from validated statistical models and do not constitute clinical advice, diagnosis, or treatment recommendation.</span>
+                <span>Estimates are derived from validated statistical models and do not constitute clinical advice, diagnosis, or treatment recommendation.</span>
               </div>
 
               {error && (
@@ -838,7 +840,7 @@ export default function App() {
               <div className="actions">
                 {backBtn(() => { setError(null); setStep(3); })}
                 <button className="btn btn-primary btn-lg" onClick={fetchResults} disabled={loading} aria-busy={loading}>
-                  {loading ? "Computing…" : <>Compute risk estimates{nextIcon}</>}
+                  {loading ? "Computing…" : <>Compute estimates{nextIcon}</>}
                 </button>
               </div>
             </section>
@@ -923,10 +925,10 @@ export default function App() {
     return (
       <div>
         <div className="riskbar-head">
-          <span>Combined risk probability</span>
+          <span>Probability of a recorded diagnosis</span>
           <span><span className="mono">{pct}%</span> <span style={{ color, fontWeight: 600 }}>{label}</span></span>
         </div>
-        <div className="riskbar" role="img" aria-label={`${pct}% combined risk, ${label}`}>
+        <div className="riskbar" role="img" aria-label={`${pct}% probability of a recorded diagnosis, ${label}`}>
           <div className="riskbar-fill" style={{ width: `${pct}%`, background: color, animation: "grow 1.1s var(--ease) 0.2s both" }} />
         </div>
         <div className="riskbar-scale" aria-hidden="true"><span>0%</span><span>50%</span><span>100%</span></div>
@@ -943,7 +945,7 @@ export default function App() {
         <main className="results">
           <div className="rise">
             <div className="status-line"><CheckCircle size={16} weight="fill" aria-hidden="true" />Analysis complete</div>
-            <h1 className="results-title">Risk Assessment</h1>
+            <h1 className="results-title">Results</h1>
             <p className="results-meta">
               {drugs.length} medication{drugs.length !== 1 ? "s" : ""}, {nComos} comorbidities, {selectedPhenos.map(pid => PHENOTYPES[pid].abbr).join(", ")}
             </p>
@@ -991,9 +993,9 @@ export default function App() {
                   <div className="summary">
                     <RiskGauge value={r.risk} size={140} />
                     <div>
-                      <div className="summary-lead">{riskWord} risk driven primarily by {driverWord}</div>
+                      <div className="summary-lead">{riskWord} probability, driven primarily by {driverWord}</div>
                       <p className="summary-text">
-                        The model integrates drug associations, demographics, and comorbidities. The drug signal (DualR score) carries the most predictive weight.
+                        How likely it is that this person's health record contains a diagnosis of {p.name.toLowerCase()}, based on age, sex, recorded conditions and the medicines prescribed in the six months before. It is not a forecast of future disease.
                       </p>
                     </div>
                   </div>
@@ -1013,8 +1015,8 @@ export default function App() {
                         <h4 className="block-title" style={{ fontSize: 13.5 }}>Per-drug contributions</h4>
                       </div>
                       <div className="waterfall-legend">
-                        <span><i style={{ background: "var(--mark-up)" }} />Risk-increasing (positive)</span>
-                        <span><i style={{ background: "var(--mark-down)" }} />Protective (negative)</span>
+                        <span><i style={{ background: "var(--mark-up)" }} />Raises probability (positive)</span>
+                        <span><i style={{ background: "var(--mark-down)" }} />Lowers probability (negative)</span>
                       </div>
                       {r.topDrugs.length > 0
                         ? <DrugWaterfall drugs={r.topDrugs} />
@@ -1059,7 +1061,7 @@ export default function App() {
 
           <p className="disclaimer">
             <strong>Important.</strong>{" "}
-            Risk estimates are generated using the DualR method validated on All of Us (N=254,487) and Indiana Network for Patient Care (N=1.13M). Results reflect statistical associations and do not constitute clinical diagnosis or treatment recommendation. No information was stored during this session.
+            Estimates are generated using the DualR method validated on All of Us (N=254,487). They give the probability that a health record like the one described contains the diagnosis, not a forecast of future disease. Results reflect statistical associations and do not constitute clinical diagnosis or treatment recommendation. No information was stored during this session.
           </p>
         </main>
         <Footer />
